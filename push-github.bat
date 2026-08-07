@@ -102,15 +102,28 @@ set "GIT_SSH_COMMAND=!SSHCMD!"
 git push -u origin main
 if errorlevel 1 (
     echo.
-    echo [ERROR] Push failed. Common causes:
-    echo   1. Public key not added or not active, rerun this script
-    echo   2. Wrong SSH repo URL
-    echo   3. Repo is not empty, run: git pull --rebase origin main
-    echo      then rerun this script.
+    echo     Remote may have commits we do not have locally.
+    echo     Trying to merge remote changes first...
+    git pull --rebase origin main
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Merge failed. Possible reasons:
+        echo   1. Conflicting files, please resolve them manually
+        echo   2. Network issue
+        echo.
+        echo   Check SSH: ssh -T git@github.com
+        pause
+        exit /b 1
+    )
     echo.
-    echo   Check SSH: ssh -T git@github.com
-    pause
-    exit /b 1
+    echo     Merge done, pushing again...
+    git push -u origin main
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Push still failed. Please check the messages above.
+        pause
+        exit /b 1
+    )
 )
 echo.
 echo [DONE] Code pushed to GitHub!
