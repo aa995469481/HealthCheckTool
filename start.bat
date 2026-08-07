@@ -28,10 +28,11 @@ if errorlevel 1 (
 
 for /f "delims=" %%v in ('node -v') do set "NODE_V=%%v"
 for /f "delims=" %%v in ('npm -v') do set "NPM_V=%%v"
+for /f "delims=.v tokens=1" %%m in ('node -v') do set "NODE_MAJOR=%%m"
 echo         Node: %NODE_V%  /  npm: %NPM_V%
 
-rem Vite 5 requires Node 18+
-if "%NODE_V:~0,2%"=="v1" (
+rem Vite 5 requires Node 18 or higher
+if %NODE_MAJOR% LSS 18 (
     echo.
     echo [ERROR] Node is too old, 18 or higher is required. Please upgrade.
     pause

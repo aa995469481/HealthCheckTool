@@ -99,32 +99,28 @@ if not defined SSHCMD if exist "%ProgramFiles%\Git\usr\bin\ssh.exe" set "SSHCMD=
 if not defined SSHCMD if exist "%ProgramFiles(x86)%\Git\usr\bin\ssh.exe" set "SSHCMD=%ProgramFiles(x86)%\Git\usr\bin\ssh.exe -o StrictHostKeyChecking=accept-new"
 if not defined SSHCMD if exist "%LOCALAPPDATA%\Programs\Git\usr\bin\ssh.exe" set "SSHCMD=%LOCALAPPDATA%\Programs\Git\usr\bin\ssh.exe -o StrictHostKeyChecking=accept-new"
 set "GIT_SSH_COMMAND=!SSHCMD!"
-git push -u origin main
-if errorlevel 1 (
-    echo.
-    echo     Remote may have commits we do not have locally.
-    echo     Trying to merge remote changes first...
-    git pull --rebase origin main
-    if errorlevel 1 (
-        echo.
-        echo [ERROR] Merge failed. Possible reasons:
-        echo   1. Conflicting files, please resolve them manually
-        echo   2. Network issue
-        echo.
-        echo   Check SSH: ssh -T git@github.com
-        pause
-        exit /b 1
-    )
-    echo.
-    echo     Merge done, pushing again...
-    git push -u origin main
-    if errorlevel 1 (
-        echo.
-        echo [ERROR] Push still failed. Please check the messages above.
-        pause
-        exit /b 1
-    )
-)
+
+set "PUSH_TRIES=0"
+:do_push
+git push -u origin main > "%TEMP%\git-push.log" 2>&1
+set "PUSH_EC=!errorlevel!"
+type "%TEMP%\git-push.log"
+if "!PUSH_EC!"=="0" goto :push_ok
+rem exit code not zero, double check the log: if no failure markers the push actually went through
+findstr /i /c:"rejected" /c:"error:" /c:"failed" /c:"denied" /c:"fatal" "%TEMP%\git-push.log" >nul 2>&1
+if errorlevel 1 goto :push_ok
+set /a PUSH_TRIES+=1
+if !PUSH_TRIES! gtr 1 goto :fail_push
+echo.
+echo     Remote may have commits we do not have locally.
+echo     Trying to merge remote changes first...
+git pull --rebase origin main
+if errorlevel 1 goto :fail_pull
+echo.
+echo     Merge done, pushing again...
+goto :do_push
+
+:push_ok
 echo.
 echo [DONE] Code pushed to GitHub!
 echo         Repo: !GIT_REPO!
@@ -132,3 +128,19 @@ echo.
 pause
 endlocal
 exit /b
+
+:fail_pull
+echo.
+echo [ERROR] Merge failed. Possible reasons:
+echo   1. Conflicting files, please resolve them manually
+echo   2. Network issue
+echo.
+echo   Check SSH: ssh -T git@github.com
+pause
+exit /b 1
+
+:fail_push
+echo.
+echo [ERROR] Push still failed. Please check the messages above.
+pause
+exit /b 1
