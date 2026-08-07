@@ -86,12 +86,16 @@ rem ---------- install dependencies, trying multiple registries ----------
 rem %~1 = directory containing package.json
 pushd "%~1"
 set "INSTALLED="
-for %%r in ("%REG1%" "%REG2%" "%REG3%") do (
+set "CUR_REG="
+for /f "delims=" %%r in ('npm config get registry') do set "CUR_REG=%%r"
+for %%r in ("!CUR_REG!" "%REG1%" "%REG2%" "%REG3%") do (
     if not defined INSTALLED (
-        echo.
-        echo     Trying registry: %%~r
-        call npm install --registry=%%~r --fetch-retries=1 --fetch-timeout=30000
-        if not errorlevel 1 set "INSTALLED=1"
+        if not "%%~r"=="" (
+            echo.
+            echo     Trying registry: %%~r
+            call npm install --registry=%%~r --fetch-retries=1 --fetch-timeout=30000
+            if not errorlevel 1 set "INSTALLED=1"
+        )
     )
 )
 popd
