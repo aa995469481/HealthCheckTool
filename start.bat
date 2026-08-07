@@ -1,9 +1,12 @@
 @echo off
+setlocal EnableDelayedExpansion
 title Service Inspection System - Start
 cd /d "%~dp0"
 
-rem npm registry: set empty to use the official one
-set "NPM_REGISTRY=--registry=https://registry.npmmirror.com"
+rem npm registries to try in order
+set "REG1=https://registry.npmmirror.com"
+set "REG2=https://mirrors.cloud.tencent.com/npm"
+set "REG3=https://registry.npmjs.org"
 
 echo ============================================
 echo    Service Inspection System - One-Click Start
@@ -43,28 +46,22 @@ echo.
 rem ---------- 2. Install dependencies, skip if already installed ----------
 if exist "server\node_modules" goto :web_deps
 echo [2/4] Installing server dependencies...
-pushd server
-call npm install %NPM_REGISTRY%
+call :npm_install server
 if errorlevel 1 (
-    popd
     echo [ERROR] Server dependencies install failed. Check network and retry.
     pause
     exit /b 1
 )
-popd
 
 :web_deps
 if exist "web\node_modules" goto :start_servers
 echo [2/4] Installing web dependencies...
-pushd web
-call npm install %NPM_REGISTRY%
+call :npm_install web
 if errorlevel 1 (
-    popd
     echo [ERROR] Web dependencies install failed. Check network and retry.
     pause
     exit /b 1
 )
-popd
 
 rem ---------- 3. Start backend and frontend ----------
 :start_servers
@@ -83,6 +80,23 @@ echo Note: do not run this script twice. Close the two black windows to stop.
 echo.
 pause
 exit /b
+
+rem ---------- install dependencies, trying multiple registries ----------
+:npm_install
+rem %~1 = directory containing package.json
+pushd "%~1"
+set "INSTALLED="
+for %%r in ("%REG1%" "%REG2%" "%REG3%") do (
+    if not defined INSTALLED (
+        echo.
+        echo     Trying registry: %%~r
+        call npm install --registry=%%~r --fetch-retries=1 --fetch-timeout=30000
+        if not errorlevel 1 set "INSTALLED=1"
+    )
+)
+popd
+if defined INSTALLED exit /b 0
+exit /b 1
 
 rem ---------- download and install portable Node.js ----------
 :install_node
