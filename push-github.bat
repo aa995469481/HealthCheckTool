@@ -8,6 +8,10 @@ echo    Push project to GitHub (SSH)
 echo ============================================
 echo.
 
+rem Default: start from step 4, steps 1-3 are already done.
+rem Run with argument "full" to redo steps 1-3 from scratch.
+if /i not "%~1"=="full" goto :step4
+
 rem ---------- 1. Check Git ----------
 where git >nul 2>nul
 if errorlevel 1 (
@@ -69,6 +73,7 @@ echo.
 set /p DUMMY=  Press Enter after adding the key...
 echo.
 
+:step4
 rem ---------- 4. Commit code ----------
 echo [4/5] Commit code...
 git add -A
