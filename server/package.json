@@ -1,0 +1,13 @@
+{
+  "name": "service-inspection-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "业务巡检管理系统 - 后端服务",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
