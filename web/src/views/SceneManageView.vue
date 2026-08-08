@@ -93,27 +93,30 @@
 
           <el-form-item label="聚类字段">
             <div class="cluster-fields">
-              <div v-for="(f, i) in sceneDraft.clusterFields" :key="f" class="cluster-field-row">
-                <el-tag size="small" type="warning" effect="dark">{{ i + 1 }}级</el-tag>
-                <el-tag size="small" type="primary" effect="plain" class="cluster-field-name">{{ f }}</el-tag>
-                <el-button-group class="cluster-field-ops">
-                  <el-button size="small" :disabled="i === 0" @click="moveClusterField(i, -1)">上移</el-button>
-                  <el-button size="small" :disabled="i === sceneDraft.clusterFields.length - 1" @click="moveClusterField(i, 1)">下移</el-button>
-                  <el-button size="small" type="danger" @click="removeClusterField(i)">删除</el-button>
-                </el-button-group>
+              <template v-if="sceneDraft.focusFields.length">
+                <el-checkbox-group v-model="sceneDraft.clusterFields" class="cluster-check-group">
+                  <el-checkbox
+                    v-for="f in sceneDraft.focusFields"
+                    :key="f"
+                    :label="f"
+                    class="cluster-check-item"
+                  >{{ f }}</el-checkbox>
+                </el-checkbox-group>
+              </template>
+              <template v-else>
+                <el-tag
+                  v-for="(f, i) in sceneDraft.clusterFields"
+                  :key="i"
+                  type="warning"
+                  effect="plain"
+                  closable
+                  @close="sceneDraft.clusterFields.splice(i, 1)"
+                >{{ f }}</el-tag>
+              </template>
+              <div class="focus-hint" style="margin-top: 6px">
+                可多选，每个字段都是独立的 1 级分析维度（按字段取值分别分组，并列展示，互不级联）；勾选/取消即启用/停用该维度
               </div>
-              <el-select
-                v-if="clusterOptions.length"
-                v-model="clusterPick"
-                placeholder="从关注字段中选择聚类字段"
-                size="small"
-                style="width: 260px; margin-top: 6px"
-                @change="addClusterField"
-              >
-                <el-option v-for="f in clusterOptions" :key="f" :label="f" :value="f" />
-              </el-select>
             </div>
-            <div class="focus-hint">聚类字段顺序即分组层级：第 1 级为分组主键，第 2 级为组内子维度，可多级下钻；默认内码+外码</div>
           </el-form-item>
         </el-form>
 
@@ -156,11 +159,11 @@
             <el-tag v-for="(f, i) in (row.focusFields || [])" :key="i" size="small" type="success" effect="plain">{{ f }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="聚类字段" min-width="160">
+        <el-table-column label="聚类维度" min-width="160">
           <template #default="{ row }">
             <div v-if="(row.clusterFields || []).length">
-              <el-tag v-for="(f, i) in row.clusterFields" :key="i" size="small" type="warning" effect="plain">
-                {{ i + 1 }}级·{{ f }}
+              <el-tag v-for="f in row.clusterFields" :key="f" size="small" type="warning" effect="plain">
+                {{ f }}
               </el-tag>
             </div>
             <span v-else class="text-muted">默认(内码+外码)</span>
@@ -178,7 +181,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, computed, onMounted, nextTick } from 'vue';
+import { ref, onMounted, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Refresh, CircleCheck } from '@element-plus/icons-vue';
 
@@ -194,7 +197,6 @@ const scenes = ref([]);
 const focusInputVisible = ref(false);
 const focusInput = ref('');
 const focusInputRef = ref();
-const clusterPick = ref('');
 
 async function request(url, options = {}) {
   const res = await fetch(url, {
@@ -312,35 +314,6 @@ function addFocusField() {
   focusInputVisible.value = false;
 }
 
-/** 可选聚类字段：关注字段中尚未加入聚类字段的 */
-const clusterOptions = computed(() => {
-  if (!sceneDraft.value) return [];
-  const used = new Set((sceneDraft.value.clusterFields || []).map((f) => String(f)));
-  return (sceneDraft.value.focusFields || []).filter((f) => !used.has(String(f)));
-});
-
-function addClusterField(v) {
-  if (v && sceneDraft.value) {
-    if (!sceneDraft.value.clusterFields.includes(v)) sceneDraft.value.clusterFields.push(v);
-  }
-  clusterPick.value = '';
-}
-
-function removeClusterField(i) {
-  if (sceneDraft.value && sceneDraft.value.clusterFields.length > 1) {
-    sceneDraft.value.clusterFields.splice(i, 1);
-  } else if (sceneDraft.value) {
-    ElMessage.warning('至少保留 1 个聚类字段');
-  }
-}
-
-function moveClusterField(i, dir) {
-  const j = i + dir;
-  if (!sceneDraft.value || j < 0 || j >= sceneDraft.value.clusterFields.length) return;
-  const arr = sceneDraft.value.clusterFields;
-  [arr[i], arr[j]] = [arr[j], arr[i]];
-}
-
 onMounted(loadScenes);
 </script>
 
@@ -403,16 +376,13 @@ onMounted(loadScenes);
   flex-direction: column;
   gap: 6px;
 }
-.cluster-field-row {
+.cluster-check-group {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 14px;
 }
-.cluster-field-name {
-  font-family: Consolas, monospace;
-}
-.cluster-field-ops {
-  margin-left: 4px;
+.cluster-check-item {
+  margin-right: 0;
 }
 .text-muted {
   font-size: 12px;

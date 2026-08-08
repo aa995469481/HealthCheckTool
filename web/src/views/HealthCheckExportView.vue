@@ -157,55 +157,48 @@
           <span class="cluster-scene-name">{{ s.scenarioTitle }}</span>
           <el-tag size="small" type="info">共 {{ s.total }} 条</el-tag>
           <el-tag v-if="s.clusterFields && s.clusterFields.length" size="small" type="warning">
-            聚类：{{ s.clusterFields.join(' → ') }}
+            聚类维度：{{ s.clusterFields.join('、') }}
           </el-tag>
-          <el-tag v-if="s.others" size="small" type="warning">其他小聚类 {{ s.others.count }} 条</el-tag>
         </div>
 
-        <el-table
-          :data="s.groups"
-          row-key="nodeKey"
-          :tree-props="{ children: 'children' }"
-          border
-          size="small"
-          class="cluster-table"
-          default-expand-all
-        >
-          <el-table-column label="分组（多级下钻）" min-width="240">
-            <template #default="{ row }">
-              <el-tag size="small" :type="row.children ? 'danger' : 'primary'">
-                {{ row.field }} = {{ row.key }}
-              </el-tag>
-              <span v-if="row.others" class="cell-more">下级另有 {{ row.others }} 条小聚类</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="count" label="条数" width="80" />
-          <el-table-column prop="percent" label="占比" width="90">
-            <template #default="{ row }">{{ row.percent }}%</template>
-          </el-table-column>
-          <el-table-column label="版本分布" min-width="190">
-            <template #default="{ row }">
-              <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
-                {{ v.version }} {{ v.count }}条
-              </el-tag>
-              <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="代表样本" min-width="240">
-            <template #default="{ row }">
-              <el-collapse v-if="row.samples && row.samples.length">
-                <el-collapse-item
-                  v-for="(sample, i) in row.samples"
-                  :key="i"
-                  :title="`样本 ${i + 1}`"
-                >
-                  <pre class="sample-body">{{ JSON.stringify(sample, null, 2) }}</pre>
-                </el-collapse-item>
-              </el-collapse>
-              <span v-else class="cell-more">展开下级分组查看样本</span>
-            </template>
-          </el-table-column>
-        </el-table>
+        <div v-for="dim in (s.dimensions || [])" :key="dim.field" class="cluster-dim">
+          <div class="cluster-dim-title">
+            维度「{{ dim.field }}」按字段取值分组
+            <el-tag v-if="dim.others" size="small" type="warning">其他小聚类 {{ dim.others.count }} 条</el-tag>
+          </div>
+          <el-table :data="dim.groups" border size="small" class="cluster-table">
+            <el-table-column label="取值" min-width="160">
+              <template #default="{ row }">
+                <el-tag size="small" type="primary">{{ row.key }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="count" label="条数" width="80" />
+            <el-table-column prop="percent" label="占比" width="90">
+              <template #default="{ row }">{{ row.percent }}%</template>
+            </el-table-column>
+            <el-table-column label="版本分布" min-width="190">
+              <template #default="{ row }">
+                <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
+                  {{ v.version }} {{ v.count }}条
+                </el-tag>
+                <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="代表样本" min-width="240">
+              <template #default="{ row }">
+                <el-collapse>
+                  <el-collapse-item
+                    v-for="(sample, i) in row.samples"
+                    :key="i"
+                    :title="`样本 ${i + 1}`"
+                  >
+                    <pre class="sample-body">{{ JSON.stringify(sample, null, 2) }}</pre>
+                  </el-collapse-item>
+                </el-collapse>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </div>
     </el-card>
   </div>
@@ -668,6 +661,18 @@ onMounted(() => {
 }
 .cluster-scene {
   margin-bottom: 18px;
+}
+.cluster-dim {
+  margin-bottom: 12px;
+}
+.cluster-dim-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .cluster-scene-title {
   display: flex;
