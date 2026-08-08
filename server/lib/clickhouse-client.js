@@ -52,7 +52,7 @@ const PILOT_FILTER_CONDITION = {
   queryString: '*'
 };
 
-/** 'YYYY-MM-DD' 或毫秒时间戳字符串 -> 毫秒数；空则默认今天 00:00(+08:00) */
+/** 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:mm:ss'（精确到秒）或毫秒时间戳字符串 -> 毫秒数；空则默认今天 00:00(+08:00) */
 function toTimestampMs(dateStr, isEnd) {
   if (dateStr === '' || dateStr == null) {
     const d = new Date();
@@ -61,7 +61,13 @@ function toTimestampMs(dateStr, isEnd) {
     return d.getTime();
   }
   if (/^\d{10,13}$/.test(String(dateStr))) return Number(dateStr);
-  return new Date(`${String(dateStr)}T${isEnd ? '23:59:59' : '00:00:00'}+08:00`).getTime();
+  const s = String(dateStr);
+  // 已精确到时分秒（含空格），直接按秒转换
+  if (s.includes(' ')) {
+    return new Date(`${s.replace(' ', 'T')}+08:00`).getTime();
+  }
+  // 纯日期补时分秒
+  return new Date(`${s}T${isEnd ? '23:59:59' : '00:00:00'}+08:00`).getTime();
 }
 
 /**

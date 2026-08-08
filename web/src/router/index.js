@@ -22,12 +22,6 @@ const routes = [
     name: 'SceneManage',
     component: () => import('../views/SceneManageView.vue'),
     meta: { title: '巡检场景管理' }
-  },
-  {
-    path: '/traffic-card-inspection',
-    name: 'TrafficCardInspection',
-    component: () => import('../views/TrafficCardInspectionView.vue'),
-    meta: { title: '交通卡业务巡检' }
   }
 ];
 

@@ -78,12 +78,12 @@
         <el-form-item label="时间范围">
           <el-date-picker
             v-model="dateRange"
-            type="daterange"
+            type="datetimerange"
             range-separator="至"
-            start-placeholder="开始"
-            end-placeholder="结束"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
             value-format="YYYY-MM-DD HH:mm:ss"
-            style="width: 300px"
+            style="width: 400px"
           />
         </el-form-item>
       </el-form>
