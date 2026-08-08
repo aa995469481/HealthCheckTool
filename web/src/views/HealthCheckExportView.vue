@@ -259,7 +259,7 @@
           <el-input v-model="aiForm.endpoint" placeholder="https://.../v1/chat/completions" />
         </el-form-item>
         <el-form-item label="Token">
-          <el-input v-model="aiToken" type="password" show-password placeholder="Bearer Token（sk-...），留空表示不修改" />
+          <el-input v-model="aiToken" type="password" show-password placeholder="sk-xxx，仅填令牌本身（无需带 Bearer 前缀）" />
           <div class="ai-form-tip">
             已配置：{{ aiStatus.hasToken ? '是' : '否' }}
             <el-button v-if="aiStatus.hasToken" link type="danger" size="small" @click="clearAiToken">清除 Token</el-button>
@@ -675,7 +675,8 @@ async function saveAiConfig() {
         temperature: aiForm.temperature,
         maxCharsPerPrompt: aiForm.maxCharsPerPrompt,
         timeoutMs: aiForm.timeoutMs,
-        token: aiToken.value.trim() || undefined
+        // 自动去掉用户误填的 Bearer 前缀，避免 Authorization 双写
+        token: aiToken.value.trim().replace(/^Bearer\s+/i, '') || undefined
       })
     });
     aiStatus.hasToken = !!data.hasToken;

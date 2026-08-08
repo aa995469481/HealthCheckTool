@@ -31,7 +31,11 @@ async function callChat({ system, user } = {}) {
   if (!cfg.token || !cfg.token.trim()) {
     throw new Error('AI Token 未配置，请先在「AI 设置」中填写');
   }
-  const token = cfg.token.trim();
+  // 兼容：用户可能填成了 "Bearer sk-xxx"，去掉前缀避免 Authorization 变成 "Bearer Bearer sk-xxx"
+  const rawToken = cfg.token.trim();
+  const token = rawToken.toLowerCase().startsWith('bearer ')
+    ? rawToken.slice('bearer '.length).trim()
+    : rawToken;
 
   const messages = [];
   if (system && String(system).trim()) messages.push({ role: 'system', content: String(system) });
