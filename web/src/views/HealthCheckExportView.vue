@@ -153,66 +153,70 @@
         </div>
       </template>
 
-      <div v-for="s in analysis.summaries" :key="s.scenarioTitle" class="cluster-scene">
-        <div class="cluster-scene-title">
-          <span class="cluster-scene-name">{{ s.scenarioTitle }}</span>
-          <el-tag size="small" type="info">共 {{ s.total }} 条</el-tag>
-          <el-tag v-if="s.clusterFields && s.clusterFields.length" size="small" type="warning">
-            聚类维度：{{ s.clusterFields.join('、') }}
-          </el-tag>
-        </div>
+      <!-- 每个场景默认折叠，由用户按需展开查看维度 -->
+      <el-collapse v-model="expandedScenes" class="cluster-collapse">
+        <el-collapse-item v-for="s in analysis.summaries" :key="s.scenarioTitle" :name="s.scenarioTitle">
+          <template #title>
+            <div class="cluster-scene-title">
+              <span class="cluster-scene-name">{{ s.scenarioTitle }}</span>
+              <el-tag size="small" type="info">共 {{ s.total }} 条</el-tag>
+              <el-tag v-if="s.clusterFields && s.clusterFields.length" size="small" type="warning">
+                聚类维度：{{ s.clusterFields.join('、') }}
+              </el-tag>
+            </div>
+          </template>
 
-        <div v-for="dim in (s.dimensions || [])" :key="dim.field" class="cluster-dim">
-          <div class="cluster-dim-title">
-            维度「{{ dim.field }}」按字段取值分组（Top 7）
-            <el-tag v-if="dim.subField" size="small" type="info">二级下钻：{{ dim.subField }}</el-tag>
-            <el-tag v-if="dim.others" size="small" type="warning">其他 {{ dim.others.groups }} 组共 {{ dim.others.count }} 条</el-tag>
+          <div v-for="dim in (s.dimensions || [])" :key="dim.field" class="cluster-dim">
+            <div class="cluster-dim-title">
+              维度「{{ dim.field }}」按字段取值分组（Top 7）
+              <el-tag v-if="dim.subField" size="small" type="info">二级下钻：{{ dim.subField }}</el-tag>
+              <el-tag v-if="dim.others" size="small" type="warning">其他 {{ dim.others.groups }} 组共 {{ dim.others.count }} 条</el-tag>
+            </div>
+            <el-table
+              :data="dim.groups"
+              row-key="nodeKey"
+              :tree-props="{ children: 'children' }"
+              border
+              size="small"
+              class="cluster-table"
+            >
+              <el-table-column label="取值" min-width="180">
+                <template #default="{ row }">
+                  <span class="tree-level-tag" v-if="row.children">一级</span>
+                  <span class="tree-level-tag sub" v-else-if="dim.subField">二级</span>
+                  <el-tag size="small" type="primary">{{ row.key }}</el-tag>
+                  <span v-if="row.subOthersCount" class="cell-more">另 {{ row.subOthersCount }} 条超 Top7</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="count" label="条数" width="80" />
+              <el-table-column prop="percent" label="占比" width="100">
+                <template #default="{ row }">{{ row.percent }}%</template>
+              </el-table-column>
+              <el-table-column label="版本分布" min-width="190">
+                <template #default="{ row }">
+                  <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
+                    {{ v.version }} {{ v.count }}条
+                  </el-tag>
+                  <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="代表样本" min-width="240">
+                <template #default="{ row }">
+                  <el-collapse>
+                    <el-collapse-item
+                      v-for="(sample, i) in row.samples"
+                      :key="i"
+                      :title="`样本 ${i + 1}`"
+                    >
+                      <pre class="sample-body">{{ JSON.stringify(sample, null, 2) }}</pre>
+                    </el-collapse-item>
+                  </el-collapse>
+                </template>
+              </el-table-column>
+            </el-table>
           </div>
-          <el-table
-            :data="dim.groups"
-            row-key="nodeKey"
-            :tree-props="{ children: 'children' }"
-            border
-            size="small"
-            class="cluster-table"
-            default-expand-all
-          >
-            <el-table-column label="取值" min-width="180">
-              <template #default="{ row }">
-                <span class="tree-level-tag" v-if="row.children">一级</span>
-                <span class="tree-level-tag sub" v-else-if="dim.subField">二级</span>
-                <el-tag size="small" type="primary">{{ row.key }}</el-tag>
-                <span v-if="row.subOthersCount" class="cell-more">另 {{ row.subOthersCount }} 条超 Top7</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="count" label="条数" width="80" />
-            <el-table-column prop="percent" label="占比" width="100">
-              <template #default="{ row }">{{ row.percent }}%</template>
-            </el-table-column>
-            <el-table-column label="版本分布" min-width="190">
-              <template #default="{ row }">
-                <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
-                  {{ v.version }} {{ v.count }}条
-                </el-tag>
-                <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="代表样本" min-width="240">
-              <template #default="{ row }">
-                <el-collapse>
-                  <el-collapse-item
-                    v-for="(sample, i) in row.samples"
-                    :key="i"
-                    :title="`样本 ${i + 1}`"
-                  >
-                    <pre class="sample-body">{{ JSON.stringify(sample, null, 2) }}</pre>
-                  </el-collapse-item>
-                </el-collapse>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </div>
+        </el-collapse-item>
+      </el-collapse>
     </el-card>
 
     <!-- AI 巡检日报卡片 -->
@@ -316,6 +320,8 @@ const aiToken = ref('');
 const savingAi = ref(false);
 const aiReport = ref(null);
 const generating = ref(false);
+/* 聚类摘要：展开的场景名列表，默认全部折叠 */
+const expandedScenes = ref([]);
 
 const plan = reactive({
   name: '',
@@ -866,6 +872,15 @@ onMounted(() => {
   font-size: 13px;
   color: #909399;
 }
+.cluster-collapse {
+  border: none;
+}
+.cluster-collapse :deep(.el-collapse-item__header) {
+  border-bottom: 1px solid #e4e7ed;
+}
+.cluster-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+}
 .cluster-scene {
   margin-bottom: 18px;
 }
@@ -898,7 +913,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 0;
+  padding-right: 8px;
 }
 .cluster-scene-name {
   font-weight: 600;
