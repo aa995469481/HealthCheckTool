@@ -156,20 +156,34 @@
         <div class="cluster-scene-title">
           <span class="cluster-scene-name">{{ s.scenarioTitle }}</span>
           <el-tag size="small" type="info">共 {{ s.total }} 条</el-tag>
+          <el-tag v-if="s.clusterFields && s.clusterFields.length" size="small" type="warning">
+            聚类：{{ s.clusterFields.join(' → ') }}
+          </el-tag>
           <el-tag v-if="s.others" size="small" type="warning">其他小聚类 {{ s.others.count }} 条</el-tag>
         </div>
 
-        <el-table :data="s.groups" border size="small" class="cluster-table">
-          <el-table-column prop="inCode" label="内码" width="110">
+        <el-table
+          :data="s.groups"
+          row-key="nodeKey"
+          :tree-props="{ children: 'children' }"
+          border
+          size="small"
+          class="cluster-table"
+          default-expand-all
+        >
+          <el-table-column label="分组（多级下钻）" min-width="240">
             <template #default="{ row }">
-              <el-tag size="small" type="danger">{{ row.inCode }}</el-tag>
+              <el-tag size="small" :type="row.children ? 'danger' : 'primary'">
+                {{ row.field }} = {{ row.key }}
+              </el-tag>
+              <span v-if="row.others" class="cell-more">下级另有 {{ row.others }} 条小聚类</span>
             </template>
           </el-table-column>
-          <el-table-column prop="count" label="条数" width="70" />
-          <el-table-column prop="percent" label="占比" width="80">
+          <el-table-column prop="count" label="条数" width="80" />
+          <el-table-column prop="percent" label="占比" width="90">
             <template #default="{ row }">{{ row.percent }}%</template>
           </el-table-column>
-          <el-table-column label="版本分布" min-width="180">
+          <el-table-column label="版本分布" min-width="190">
             <template #default="{ row }">
               <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
                 {{ v.version }} {{ v.count }}条
@@ -177,18 +191,9 @@
               <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
             </template>
           </el-table-column>
-          <el-table-column label="外码分布（按次数降序，含占比）" min-width="260">
-            <template #default="{ row }">
-              <div v-for="e in row.extCodes" :key="e.code" class="ext-line">
-                <el-tag size="small" class="ext-tag">{{ e.code }}</el-tag>
-                <span class="ext-count">{{ e.count }} 条</span>
-                <span class="ext-percent">({{ e.percent }}%)</span>
-              </div>
-            </template>
-          </el-table-column>
           <el-table-column label="代表样本" min-width="240">
             <template #default="{ row }">
-              <el-collapse>
+              <el-collapse v-if="row.samples && row.samples.length">
                 <el-collapse-item
                   v-for="(sample, i) in row.samples"
                   :key="i"
@@ -197,6 +202,7 @@
                   <pre class="sample-body">{{ JSON.stringify(sample, null, 2) }}</pre>
                 </el-collapse-item>
               </el-collapse>
+              <span v-else class="cell-more">展开下级分组查看样本</span>
             </template>
           </el-table-column>
         </el-table>

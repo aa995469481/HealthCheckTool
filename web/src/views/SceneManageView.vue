@@ -90,6 +90,31 @@
             </div>
             <div class="focus-hint">关注字段来自 URL 的 dynamicTableColumns，用于响应数据处理（如错误码提取、结果展示）</div>
           </el-form-item>
+
+          <el-form-item label="聚类字段">
+            <div class="cluster-fields">
+              <div v-for="(f, i) in sceneDraft.clusterFields" :key="f" class="cluster-field-row">
+                <el-tag size="small" type="warning" effect="dark">{{ i + 1 }}级</el-tag>
+                <el-tag size="small" type="primary" effect="plain" class="cluster-field-name">{{ f }}</el-tag>
+                <el-button-group class="cluster-field-ops">
+                  <el-button size="small" :disabled="i === 0" @click="moveClusterField(i, -1)">上移</el-button>
+                  <el-button size="small" :disabled="i === sceneDraft.clusterFields.length - 1" @click="moveClusterField(i, 1)">下移</el-button>
+                  <el-button size="small" type="danger" @click="removeClusterField(i)">删除</el-button>
+                </el-button-group>
+              </div>
+              <el-select
+                v-if="clusterOptions.length"
+                v-model="clusterPick"
+                placeholder="从关注字段中选择聚类字段"
+                size="small"
+                style="width: 260px; margin-top: 6px"
+                @change="addClusterField"
+              >
+                <el-option v-for="f in clusterOptions" :key="f" :label="f" :value="f" />
+              </el-select>
+            </div>
+            <div class="focus-hint">聚类字段顺序即分组层级：第 1 级为分组主键，第 2 级为组内子维度，可多级下钻；默认内码+外码</div>
+          </el-form-item>
         </el-form>
 
         <!-- 过滤条件概览 -->
@@ -131,6 +156,16 @@
             <el-tag v-for="(f, i) in (row.focusFields || [])" :key="i" size="small" type="success" effect="plain">{{ f }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="聚类字段" min-width="160">
+          <template #default="{ row }">
+            <div v-if="(row.clusterFields || []).length">
+              <el-tag v-for="(f, i) in row.clusterFields" :key="i" size="small" type="warning" effect="plain">
+                {{ i + 1 }}级·{{ f }}
+              </el-tag>
+            </div>
+            <span v-else class="text-muted">默认(内码+外码)</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="170" />
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
@@ -143,7 +178,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, onMounted, nextTick } from 'vue';
+import { reactive, ref, computed, onMounted, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Refresh, CircleCheck } from '@element-plus/icons-vue';
 
@@ -159,6 +194,7 @@ const scenes = ref([]);
 const focusInputVisible = ref(false);
 const focusInput = ref('');
 const focusInputRef = ref();
+const clusterPick = ref('');
 
 async function request(url, options = {}) {
   const res = await fetch(url, {
@@ -201,6 +237,14 @@ async function parseScene() {
     // 兜底默认值（老数据/解析器未返回时）
     if (sceneDraft.value.orderFieldName === undefined) sceneDraft.value.orderFieldName = '';
     if (sceneDraft.value.orderType === undefined) sceneDraft.value.orderType = '';
+    if (!Array.isArray(sceneDraft.value.clusterFields) || !sceneDraft.value.clusterFields.length) {
+      // 默认内码 + 外码（优先从关注字段匹配，找不到用默认名）
+      const focus = sceneDraft.value.focusFields || [];
+      sceneDraft.value.clusterFields = [
+        focus.find((f) => /InCode/i.test(f)) || 'walletEventInCode',
+        focus.find((f) => /ExtCode/i.test(f)) || 'walletEventExtCode'
+      ];
+    }
     warnings.value = data.warnings || [];
     ElMessage.success('解析成功，请确认场景信息后保存');
   } catch (e) {
@@ -268,6 +312,35 @@ function addFocusField() {
   focusInputVisible.value = false;
 }
 
+/** 可选聚类字段：关注字段中尚未加入聚类字段的 */
+const clusterOptions = computed(() => {
+  if (!sceneDraft.value) return [];
+  const used = new Set((sceneDraft.value.clusterFields || []).map((f) => String(f)));
+  return (sceneDraft.value.focusFields || []).filter((f) => !used.has(String(f)));
+});
+
+function addClusterField(v) {
+  if (v && sceneDraft.value) {
+    if (!sceneDraft.value.clusterFields.includes(v)) sceneDraft.value.clusterFields.push(v);
+  }
+  clusterPick.value = '';
+}
+
+function removeClusterField(i) {
+  if (sceneDraft.value && sceneDraft.value.clusterFields.length > 1) {
+    sceneDraft.value.clusterFields.splice(i, 1);
+  } else if (sceneDraft.value) {
+    ElMessage.warning('至少保留 1 个聚类字段');
+  }
+}
+
+function moveClusterField(i, dir) {
+  const j = i + dir;
+  if (!sceneDraft.value || j < 0 || j >= sceneDraft.value.clusterFields.length) return;
+  const arr = sceneDraft.value.clusterFields;
+  [arr[i], arr[j]] = [arr[j], arr[i]];
+}
+
 onMounted(loadScenes);
 </script>
 
@@ -324,6 +397,26 @@ onMounted(loadScenes);
   font-size: 12px;
   color: #909399;
   margin-top: 6px;
+}
+.cluster-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cluster-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cluster-field-name {
+  font-family: Consolas, monospace;
+}
+.cluster-field-ops {
+  margin-left: 4px;
+}
+.text-muted {
+  font-size: 12px;
+  color: #909399;
 }
 .order-sep {
   font-size: 12px;

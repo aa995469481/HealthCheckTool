@@ -163,6 +163,11 @@ function parseAndValidate(urlStr, bodyStr) {
   const focusFields = (logParams && Array.isArray(logParams.dynamicTableColumns) ? logParams.dynamicTableColumns : [])
     .map(String);
 
+  // 聚类字段：默认取 focusFields 中的内码/外码字段（找不到时用默认名），用户在场景管理页可勾选调整
+  const inCodeFromFocus = focusFields.find((f) => /InCode/i.test(f)) || 'walletEventInCode';
+  const extCodeFromFocus = focusFields.find((f) => /ExtCode/i.test(f)) || 'walletEventExtCode';
+  const clusterFields = [inCodeFromFocus, extCodeFromFocus];
+
   // 排序字段：从请求体提取（用户确认存入场景）
   const orderFieldName = body.orderFieldName !== undefined ? body.orderFieldName : '';
   const orderType = body.orderType !== undefined ? body.orderType : '';
@@ -216,6 +221,7 @@ function parseAndValidate(urlStr, bodyStr) {
     orderFieldName: String(orderFieldName),
     orderType: String(orderType),
     focusFields,
+    clusterFields,
     filterCondition,
     createdAt: null
   };
