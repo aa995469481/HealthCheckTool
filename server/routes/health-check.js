@@ -19,6 +19,7 @@ const realInspection = require('../lib/real-inspection');
 const sceneParser = require('../lib/scene-parser');
 const sceneStore = require('../lib/scene-store');
 const debugMode = require('../lib/debug-mode');
+const excelExport = require('../lib/excel-export');
 
 const router = express.Router();
 
@@ -167,7 +168,7 @@ router.post('/inspection-profiles', (req, res) => {
   res.json({ code: 0, msg: 'ok', data: profile });
 });
 
-/* ---------- 5. 核心：执行巡检（真实调用 ClickHouse queryWithTotal） ---------- */
+/* ---------- 5. 核心：执行巡检（真实调用 ClickHouse queryWithTotal）-> 生成 Excel 下载 ---------- */
 router.post('/export-json', async (req, res) => {
   const { profile } = req.body || {};
   if (!profile || !Array.isArray(profile.enabled_scenarios) || profile.enabled_scenarios.length === 0) {
@@ -184,7 +185,6 @@ router.post('/export-json', async (req, res) => {
     const scenes = sceneStore.listScenes();
     const sceneMap = new Map(scenes.map((s) => [s.id, s]));
     const queryResults = new Map();
-    const debugRequestBodies = [];
     for (const id of profile.enabled_scenarios) {
       const scene = sceneMap.get(id);
       if (!scene) {
@@ -193,24 +193,6 @@ router.post('/export-json', async (req, res) => {
       }
 
       logger.info(`[export] query scenario=${id} title=${scene.title} table=${scene.table} cluster=${scene.cluster}`);
-      // 构造并记录完整请求体
-      const requestBody = clickhouse.buildRequestBody({
-        name: scene.table,
-        cluster: scene.cluster,
-        beginTimestamp: profile.beginTimestamp,
-        endTimestamp: profile.endTimestamp,
-        pageNo: 1,
-        pageSize: clickhouse.PAGE_SIZE,
-        app_ver: profile.app_ver,
-        filterCondition: scene.filterCondition,
-        queryString: scene.queryString,
-        granularity: scene.granularity,
-        dataSourceServiceId: scene.dataSourceServiceId,
-        orderFieldName: scene.orderFieldName,
-        orderType: scene.orderType
-      });
-      debugRequestBodies.push(requestBody);
-
       const q = await clickhouse.queryWithTotal({
         name: scene.table,
         cluster: scene.cluster,
@@ -232,22 +214,30 @@ router.post('/export-json', async (req, res) => {
       return res.json({ code: 1, msg: '未找到可执行的场景' });
     }
 
-    const data = realInspection.buildInspectionResult(profile, queryResults, scenes);
-    const cacheId = putCache(data);
-    const failedCount = (data.scenarios || []).filter((s) => s.status === 'failed').length;
-    logger.info(`[export] done scenarios=${data.scenarios.length} failedScenarios=${failedCount} cacheId=${cacheId}`);
-    res.json({
-      code: 0,
-      msg: 'ok',
-      data: {
-        data,
-        inspectCacheId: cacheId,
-        partial: data.partial,
-        filename: data.filename,
-        // 调试：回传本次使用的完整请求体（首个场景）
-        debugRequestBody: debugRequestBodies[0] || null
-      }
-    });
+    // 组装 Excel 数据：每个场景一个 sheet，仅取该场景 focusFields 关注字段
+    const excelScenarios = [];
+    for (const id of profile.enabled_scenarios) {
+      const scene = sceneMap.get(id);
+      const q = queryResults.get(id);
+      if (!scene || !q) continue;
+      excelScenarios.push({ scene, records: q.records });
+    }
+
+    const buffer = await excelExport.buildExcelBuffer(excelScenarios);
+
+    const now = new Date();
+    const stamp =
+      `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}` +
+      `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    const filename = `health-check-${stamp}.xlsx`;
+
+    logger.info(`[export] done scenarios=${excelScenarios.length} excelSize=${buffer.length}B filename=${filename}`);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(Buffer.from(buffer));
   } catch (e) {
     logger.error('[export] failed', e);
     res.json({ code: 1, msg: '巡检执行失败：' + (e.message || '未知错误') });

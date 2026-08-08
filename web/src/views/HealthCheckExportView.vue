@@ -104,8 +104,8 @@
       </div>
 
       <div class="profile-actions">
-        <el-button type="primary" :icon="Search" :loading="running" @click="runInspection">
-          执行巡检
+        <el-button type="primary" :icon="Download" :loading="running" @click="runInspection">
+          执行巡检并下载 Excel
         </el-button>
         <span class="selected-count">已选 {{ plan.enabled_scenarios.length }} 个场景</span>
       </div>
@@ -412,15 +412,32 @@ async function runInspection() {
   }
   running.value = true;
   try {
-    const data = await request('/api/health-check/export-json', {
+    const res = await fetch('/api/health-check/export-json', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile: currentProfilePayload() })
     });
-    result.value = data.data;
-    if (data.debugRequestBody) {
-      requestBodyText.value = JSON.stringify(data.debugRequestBody, null, 2);
+    // 错误时后端返回 JSON；成功时为 xlsx 文件流
+    const contentType = res.headers.get('Content-Type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      throw new Error(json.msg || '巡检执行失败');
     }
-    ElMessage.success('巡检执行完成');
+    if (!res.ok) throw new Error(`巡检执行失败：HTTP ${res.status}`);
+    const blob = await res.blob();
+    // 从 Content-Disposition 解析文件名
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : `health-check-${Date.now()}.xlsx`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    ElMessage.success('巡检完成，Excel 已开始下载');
   } catch (e) {
     ElMessage.error(e.message || '巡检执行失败');
     // 若因凭据过期失败，刷新凭据状态以显示过期提示
