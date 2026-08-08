@@ -59,7 +59,6 @@
           </div>
         </div>
       </template>
-
       <el-form :inline="true" class="profile-form">
         <el-form-item label="计划名称">
           <el-input v-model="plan.name" placeholder="如：1.0.23.300 发版巡检" style="width: 220px" />
@@ -101,6 +100,21 @@
         </el-button>
         <span class="selected-count">已选 {{ plan.enabled_scenarios.length }} 个场景</span>
       </div>
+    </el-card>
+
+    <!-- 调试面板：展示当前将发送的完整请求体 -->
+    <el-card shadow="never" class="card">
+      <template #header>
+        <div class="card-header">
+          <span>调试：请求体预览</span>
+          <div class="card-actions">
+            <el-button size="small" :icon="Search" @click="previewRequestBody">生成请求体</el-button>
+            <el-button size="small" :icon="CopyDocument" @click="copyRequestBody">复制请求体</el-button>
+          </div>
+        </div>
+      </template>
+      <div class="debug-hint">此请求体为执行巡检时发送给 ClickHouse 的完整内容（cookie / x-csrf-token 由后端自动注入，不在此展示）。</div>
+      <pre class="debug-body">{{ requestBodyText || '（点击「生成请求体」查看完整请求体）' }}</pre>
     </el-card>
 
     <!-- 巡检结果卡片 -->
@@ -174,6 +188,7 @@ const selectedProfileId = ref('');
 const dateRange = ref(null);
 const running = ref(false);
 const result = ref(null);
+const requestBodyText = ref('');
 
 const plan = reactive({
   name: '',
@@ -328,6 +343,16 @@ async function saveProfile() {
   }
 }
 
+function currentProfilePayload() {
+  return {
+    name: plan.name,
+    app_ver: plan.app_ver,
+    beginTimestamp: dateRange.value ? dateRange.value[0] : '',
+    endTimestamp: dateRange.value ? dateRange.value[1] : '',
+    enabled_scenarios: plan.enabled_scenarios
+  };
+}
+
 async function runInspection() {
   if (plan.enabled_scenarios.length === 0) {
     ElMessage.warning('请至少选择一个巡检场景');
@@ -337,22 +362,47 @@ async function runInspection() {
   try {
     const data = await request('/api/health-check/export-json', {
       method: 'POST',
-      body: JSON.stringify({
-        profile: {
-          name: plan.name,
-          app_ver: plan.app_ver,
-          beginTimestamp: dateRange.value ? dateRange.value[0] : '',
-          endTimestamp: dateRange.value ? dateRange.value[1] : '',
-          enabled_scenarios: plan.enabled_scenarios
-        }
-      })
+      body: JSON.stringify({ profile: currentProfilePayload() })
     });
     result.value = data.data;
+    if (data.debugRequestBody) {
+      requestBodyText.value = JSON.stringify(data.debugRequestBody, null, 2);
+    }
     ElMessage.success('巡检执行完成');
   } catch (e) {
     ElMessage.error(e.message || '巡检执行失败');
   } finally {
     running.value = false;
+  }
+}
+
+async function previewRequestBody() {
+  if (plan.enabled_scenarios.length === 0) {
+    ElMessage.warning('请至少选择一个巡检场景');
+    return;
+  }
+  try {
+    const body = await request('/api/health-check/debug/request-body', {
+      method: 'POST',
+      body: JSON.stringify({ profile: currentProfilePayload() })
+    });
+    requestBodyText.value = JSON.stringify(body, null, 2);
+    ElMessage.success('请求体已生成');
+  } catch (e) {
+    ElMessage.error(e.message || '生成请求体失败');
+  }
+}
+
+async function copyRequestBody() {
+  if (!requestBodyText.value) {
+    ElMessage.warning('请求体为空，请先生成');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(requestBodyText.value);
+    ElMessage.success('已复制');
+  } catch (e) {
+    ElMessage.error('复制失败，请手动选择复制');
   }
 }
 
@@ -420,6 +470,23 @@ onMounted(() => {
 .credential-collapse {
   margin-top: 12px;
   max-width: 720px;
+}
+.debug-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+.debug-body {
+  max-height: 320px;
+  overflow: auto;
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .profile-form {
   margin-bottom: 8px;

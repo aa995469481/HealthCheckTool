@@ -14,6 +14,8 @@ const mock = require('../lib/mock-inspection');
 const profileStore = require('../lib/profile-store');
 const secretsStore = require('../lib/secrets-store');
 const credentialManager = require('../lib/credential-manager');
+const clickhouse = require('../lib/clickhouse-client');
+const realInspection = require('../lib/real-inspection');
 
 const router = express.Router();
 
@@ -108,8 +110,8 @@ router.post('/inspection-profiles', (req, res) => {
   res.json({ code: 0, msg: 'ok', data: profile });
 });
 
-/* ---------- 5. 核心：执行巡检（当前为 Mock） ---------- */
-router.post('/export-json', (req, res) => {
+/* ---------- 5. 核心：执行巡检（真实调用 ClickHouse queryWithTotal） ---------- */
+router.post('/export-json', async (req, res) => {
   const { profile } = req.body || {};
   if (!profile || !Array.isArray(profile.enabled_scenarios) || profile.enabled_scenarios.length === 0) {
     logger.warn('[export] rejected: no enabled scenarios');
@@ -121,7 +123,47 @@ router.post('/export-json', (req, res) => {
   );
 
   try {
-    const data = mock.buildInspectionResult(profile);
+    // 对每个启用的场景执行真实查询；同一 (table, cluster) 的场景复用同一次查询结果
+    const queryResults = new Map();
+    const tableCache = new Map();
+    const debugRequestBodies = [];
+    for (const id of profile.enabled_scenarios) {
+      const def = mock.SCENARIO_DEFS.find((s) => s.id === id);
+      if (!def) continue;
+
+      const cacheKey = `${def.table}|${def.cluster}`;
+      if (!tableCache.has(cacheKey)) {
+        logger.info(`[export] query table=${def.table} cluster=${def.cluster}`);
+        // 构造并记录完整请求体
+        const requestBody = clickhouse.buildRequestBody({
+          name: def.table,
+          cluster: def.cluster,
+          beginTimestamp: profile.beginTimestamp,
+          endTimestamp: profile.endTimestamp,
+          pageNo: 1,
+          pageSize: clickhouse.PAGE_SIZE,
+          app_ver: profile.app_ver
+        });
+        debugRequestBodies.push(requestBody);
+
+        const q = await clickhouse.queryWithTotal({
+          name: def.table,
+          cluster: def.cluster,
+          beginTimestamp: profile.beginTimestamp,
+          endTimestamp: profile.endTimestamp,
+          app_ver: profile.app_ver
+        });
+        tableCache.set(cacheKey, q);
+        logger.info(`[export] table=${def.table} done total=${q.total} fetched=${q.records.length} pages=${q.pages}`);
+      }
+      queryResults.set(id, tableCache.get(cacheKey));
+    }
+
+    if (queryResults.size === 0) {
+      return res.json({ code: 1, msg: '未找到可执行的场景' });
+    }
+
+    const data = realInspection.buildInspectionResult(profile, queryResults);
     const cacheId = putCache(data);
     const failedCount = (data.scenarios || []).filter((s) => s.status === 'failed').length;
     logger.info(`[export] done scenarios=${data.scenarios.length} failedScenarios=${failedCount} cacheId=${cacheId}`);
@@ -132,12 +174,34 @@ router.post('/export-json', (req, res) => {
         data,
         inspectCacheId: cacheId,
         partial: data.partial,
-        filename: data.filename
+        filename: data.filename,
+        // 调试：回传本次使用的完整请求体（首个场景）
+        debugRequestBody: debugRequestBodies[0] || null
       }
     });
   } catch (e) {
     logger.error('[export] failed', e);
     res.json({ code: 1, msg: '巡检执行失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 5.1 调试：预览当前将发送的完整请求体（不执行查询） ---------- */
+router.post('/debug/request-body', (req, res) => {
+  const { profile } = req.body || {};
+  try {
+    const requestBody = clickhouse.buildRequestBody({
+      name: (profile && profile.table) || 'wallet_client_hmos',
+      cluster: (profile && profile.cluster) || 'ulan1-aiops-ch-az1-4',
+      beginTimestamp: profile && profile.beginTimestamp,
+      endTimestamp: profile && profile.endTimestamp,
+      pageNo: 1,
+      pageSize: clickhouse.PAGE_SIZE,
+      app_ver: profile && profile.app_ver
+    });
+    res.json({ code: 0, msg: 'ok', data: requestBody });
+  } catch (e) {
+    logger.error('[debug/request-body] failed', e);
+    res.json({ code: 1, msg: '生成请求体失败：' + (e.message || '未知错误') });
   }
 });
 
