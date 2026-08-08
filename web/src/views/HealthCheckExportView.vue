@@ -137,57 +137,77 @@
       </div>
     </el-card>
 
-    <!-- 巡检结果卡片 -->
-    <el-card v-if="result" shadow="never" class="card">
+    <!-- 聚类摘要卡片 -->
+    <el-card v-if="analysis" shadow="never" class="card">
       <template #header>
         <div class="card-header">
-          <span>巡检结果</span>
+          <span>聚类摘要</span>
           <div class="card-actions">
-            <el-button size="small" :icon="Download" @click="downloadJson">下载完整 JSON</el-button>
-            <el-button size="small" :icon="CopyDocument" @click="copyJson">复制完整 JSON</el-button>
+            <el-tag v-if="analysis.plan" size="small" type="info">{{ analysis.plan }}</el-tag>
+            <el-tag v-if="analysis.appVer" size="small">版本 {{ analysis.appVer }}</el-tag>
+            <el-tag v-if="analysis.beginTimestamp" size="small">
+              {{ analysis.beginTimestamp }} ~ {{ analysis.endTimestamp }}
+            </el-tag>
           </div>
         </div>
       </template>
 
-      <el-descriptions :column="3" border size="small" class="result-overview">
-        <el-descriptions-item label="导出时间">{{ result.exportedAt }}</el-descriptions-item>
-        <el-descriptions-item label="建议文件名">{{ result.filename }}</el-descriptions-item>
-        <el-descriptions-item label="计划名称">{{ result.planName }}</el-descriptions-item>
-        <el-descriptions-item label="目标版本">{{ result.appVer || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="时间范围">
-          {{ result.beginTimestamp || '-' }} ~ {{ result.endTimestamp || '-' }}
-        </el-descriptions-item>
-        <el-descriptions-item label="整体结论">
-          <el-tag :type="result.partial ? 'danger' : 'success'" size="small">
-            {{ result.partial ? '存在失败' : '全部正常' }}
-          </el-tag>
-        </el-descriptions-item>
-      </el-descriptions>
+      <div v-for="s in analysis.summaries" :key="s.scenarioTitle" class="cluster-scene">
+        <div class="cluster-scene-title">
+          <span class="cluster-scene-name">{{ s.scenarioTitle }}</span>
+          <el-tag size="small" type="info">共 {{ s.total }} 条</el-tag>
+          <el-tag v-if="s.others" size="small" type="warning">其他小聚类 {{ s.others.count }} 条</el-tag>
+        </div>
 
-      <div class="scenario-grid">
-        <el-card v-for="s in result.scenarios" :key="s.id" shadow="hover" class="scenario-card">
-          <div class="scenario-card-header">
-            <span class="scenario-title">{{ s.title }}</span>
-            <el-tag :type="s.status === 'success' ? 'success' : 'danger'" size="small">
-              {{ s.status === 'success' ? '成功' : '失败' }}
-            </el-tag>
-          </div>
-          <div class="scenario-meta">{{ s.table }} · {{ s.cluster }}</div>
-          <div class="scenario-summary">{{ s.summary }}</div>
-          <div class="metric-row">
-            <div class="metric"><span class="metric-num">{{ s.stats.hit }}</span><span class="metric-label">命中数</span></div>
-            <div class="metric"><span class="metric-num success">{{ s.stats.success }}</span><span class="metric-label">成功数</span></div>
-            <div class="metric"><span class="metric-num danger">{{ s.stats.failed }}</span><span class="metric-label">失败数</span></div>
-            <div class="metric"><span class="metric-num">{{ s.stats.successRate }}%</span><span class="metric-label">成功率</span></div>
-          </div>
-          <template v-if="s.failureDistribution.length">
-            <div class="dist-title">失败分布</div>
-            <div class="dist-row" v-for="d in s.failureDistribution" :key="d.code">
-              <el-tag size="small" type="danger">{{ d.code }}</el-tag>
-              <span class="dist-count">{{ d.count }} 条</span>
-            </div>
-          </template>
-        </el-card>
+        <el-table :data="s.groups" border size="small" class="cluster-table">
+          <el-table-column prop="inCode" label="内码" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" type="danger">{{ row.inCode }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="count" label="条数" width="70" />
+          <el-table-column prop="percent" label="占比" width="80">
+            <template #default="{ row }">{{ row.percent }}%</template>
+          </el-table-column>
+          <el-table-column label="时间分布" min-width="220">
+            <template #default="{ row }">
+              <span class="cell-line" v-if="row.timeRange">{{ row.timeRange }}</span>
+              <el-tag v-for="t in row.timeDist.slice(0, 4)" :key="t.time" size="small" class="cell-tag">
+                {{ t.time.split(' ')[1] }} {{ t.count }}条
+              </el-tag>
+              <span v-if="row.timeDist.length > 4" class="cell-more">…等{{ row.timeDist.length }}个时段</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="版本分布" min-width="180">
+            <template #default="{ row }">
+              <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
+                {{ v.version }} {{ v.count }}条
+              </el-tag>
+              <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="外码（按次数降序）" min-width="200">
+            <template #default="{ row }">
+              <span v-for="e in row.extCodes.slice(0, 3)" :key="e.code" class="cell-line">
+                {{ e.code }} × {{ e.count }}
+              </span>
+              <span v-if="row.extCodes.length > 3" class="cell-more">…等{{ row.extCodes.length }}个外码</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="代表样本" min-width="240">
+            <template #default="{ row }">
+              <el-collapse>
+                <el-collapse-item
+                  v-for="(sample, i) in row.samples"
+                  :key="i"
+                  :title="`样本 ${i + 1}`"
+                >
+                  <pre class="sample-body">{{ JSON.stringify(sample, null, 2) }}</pre>
+                </el-collapse-item>
+              </el-collapse>
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
     </el-card>
   </div>
@@ -208,7 +228,7 @@ const profiles = ref([]);
 const selectedProfileId = ref('');
 const dateRange = ref(null);
 const running = ref(false);
-const result = ref(null);
+const analysis = ref(null);
 const requestBodyText = ref('');
 const debugRunning = ref(false);
 const debugResultText = ref('');
@@ -438,12 +458,23 @@ async function runInspection() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     ElMessage.success('巡检完成，Excel 已开始下载');
+    // 下载后加载最新聚类摘要
+    loadAnalysis();
   } catch (e) {
     ElMessage.error(e.message || '巡检执行失败');
     // 若因凭据过期失败，刷新凭据状态以显示过期提示
     if (e.message && e.message.includes('凭据已过期')) loadCredentials();
   } finally {
     running.value = false;
+  }
+}
+
+async function loadAnalysis() {
+  try {
+    const data = await request('/api/health-check/analysis/latest');
+    analysis.value = data;
+  } catch (e) {
+    analysis.value = null;
   }
 }
 
@@ -503,30 +534,12 @@ async function runDebugQuery() {
   }
 }
 
-function downloadJson() {
-  const blob = new Blob([JSON.stringify(result.value, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = result.value.filename || 'health-check.json';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-async function copyJson() {
-  try {
-    await navigator.clipboard.writeText(JSON.stringify(result.value, null, 2));
-    ElMessage.success('已复制');
-  } catch (e) {
-    ElMessage.error('复制失败');
-  }
-}
-
 onMounted(() => {
   loadCredentials();
   loadScenarios();
   loadProfiles();
   loadDebugMode();
+  loadAnalysis();
 });
 </script>
 
@@ -637,78 +650,46 @@ onMounted(() => {
   font-size: 13px;
   color: #909399;
 }
-.result-overview {
-  margin-bottom: 16px;
+.cluster-scene {
+  margin-bottom: 18px;
 }
-.scenario-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 12px;
-}
-.scenario-card {
-  border-radius: 8px;
-}
-.scenario-card-header {
+.cluster-scene-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
-.scenario-title {
+.cluster-scene-name {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 15px;
   color: #303133;
 }
-.scenario-meta {
-  font-size: 12px;
-  color: #909399;
-  margin: 4px 0 8px;
+.cluster-table {
+  margin-bottom: 6px;
 }
-.scenario-summary {
+.cell-line {
+  display: block;
   font-size: 13px;
   color: #606266;
-  margin-bottom: 10px;
-  line-height: 1.6;
+  line-height: 1.8;
 }
-.metric-row {
-  display: flex;
-  gap: 16px;
-  margin-bottom: 8px;
-}
-.metric {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-.metric-num {
-  font-size: 18px;
-  font-weight: 700;
-  color: #303133;
-}
-.metric-num.success {
-  color: #52c41a;
-}
-.metric-num.danger {
-  color: #f5222d;
-}
-.metric-label {
-  font-size: 12px;
-  color: #909399;
-}
-.dist-title {
-  font-size: 13px;
-  color: #303133;
-  font-weight: 600;
-  margin: 6px 0;
-}
-.dist-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.cell-tag {
+  margin-right: 6px;
   margin-bottom: 4px;
 }
-.dist-count {
-  font-size: 13px;
-  color: #606266;
+.cell-more {
+  font-size: 12px;
+  color: #909399;
+}
+.sample-body {
+  font-size: 12px;
+  line-height: 1.5;
+  background: #f5f7fa;
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

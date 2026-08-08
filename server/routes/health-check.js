@@ -232,21 +232,18 @@ router.post('/export-json', async (req, res) => {
     const summaries = excelScenarios.map(({ scene, records }) => clusterSummary.buildClusterSummary(scene, records));
     const markdownTexts = summaries.map((s) => clusterSummary.toMarkdown(s));
     const analysisFile = path.join(analysisDir, `cluster-${Date.now()}.json`);
-    fs.writeFileSync(
-      analysisFile,
-      JSON.stringify(
-        {
-          createdAt: new Date().toISOString(),
-          plan: profile.name || 'unnamed',
-          appVer: profile.app_ver || '',
-          summaries,
-          markdownTexts
-        },
-        null,
-        2
-      ),
-      'utf-8'
-    );
+    const analysisData = {
+      createdAt: new Date().toISOString(),
+      plan: profile.name || 'unnamed',
+      appVer: profile.app_ver || '',
+      beginTimestamp: profile.beginTimestamp || '',
+      endTimestamp: profile.endTimestamp || '',
+      summaries,
+      markdownTexts
+    };
+    fs.writeFileSync(analysisFile, JSON.stringify(analysisData, null, 2), 'utf-8');
+    // 固定名 latest.json，供页面展示读取
+    fs.writeFileSync(path.join(analysisDir, 'latest.json'), JSON.stringify(analysisData, null, 2), 'utf-8');
     logger.info(`[export] cluster summary saved -> ${analysisFile} scenes=${summaries.length}`);
 
     const buffer = await excelExport.buildExcelBuffer(excelScenarios);
@@ -321,7 +318,23 @@ router.post('/debug/run-query', async (req, res) => {
   }
 });
 
-/* ---------- 6. 读取缓存数据（调试用） ---------- */
+/* ---------- 6. 读取聚类摘要（供页面展示 / AI 分析） ---------- */
+router.get('/analysis/latest', (req, res) => {
+  const file = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
+  if (!fs.existsSync(file)) {
+    return res.json({ code: 1, msg: '暂无聚类摘要，请先执行巡检' });
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    logger.info(`[analysis] latest -> plan=${data.plan} scenes=${(data.summaries || []).length}`);
+    res.json({ code: 0, msg: 'ok', data });
+  } catch (e) {
+    logger.error('[analysis] read latest failed', e);
+    res.json({ code: 1, msg: '读取聚类摘要失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 7. 读取缓存数据（调试用） ---------- */
 router.get('/cache/:id', (req, res) => {
   const data = getCache(req.params.id);
   if (!data) return res.json({ code: 1, msg: '缓存不存在或已过期' });
