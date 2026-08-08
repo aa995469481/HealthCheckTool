@@ -39,22 +39,60 @@ const FILTER_KEYS = [
 
 /** 从 URL 中提取 logSearchParams 并解码为对象 */
 function extractLogSearchParams(urlStr) {
+  if (!urlStr) return null;
   const url = new URL(urlStr);
   const hash = url.hash || ''; // e.g. #/log_search#&logConsoleId=...&logSearchParams=...
   const paramsStr = hash.split('#/log_search').pop() || '';
   const params = new URLSearchParams(paramsStr.startsWith('#') ? paramsStr.slice(1) : paramsStr);
   const raw = params.get('logSearchParams');
   if (!raw) return null;
-  return JSON.parse(decodeURIComponent(raw));
+  try {
+    // 部分浏览器/工具可能已经解码一次，此处做一次解码容错
+    const decoded = decodeURIComponent(raw);
+    const text = decoded.startsWith('{') ? decoded : raw;
+    return JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 从 curl 命令中提取请求体 JSON
+ * 支持：curl 'url' -H '..' --data-raw '{...}' / --data '...' / -d '...'
+ * 单引号包裹（DevTools/Windows 复制）与双引号包裹（Linux）均支持
+ * @returns {string|null} 提取到的 JSON 字符串
+ */
+function extractCurlBody(bodyStr) {
+  const text = String(bodyStr);
+  if (!/^\s*curl/i.test(text)) return null;
+  // 单引号包裹：--data-raw '{"name":"x"}'（JSON 内无单引号，直接截取到下一个单引号）
+  const single = text.match(/(?:--data-raw|--data)\s+'([^']*)'/i);
+  if (single) return single[1];
+  // 双引号包裹：--data-raw "{\"name\":\"x\"}"（处理转义双引号）
+  const double = text.match(/(?:--data-raw|--data|-d)\s+"((?:[^"\\]|\\.)*)"/i);
+  if (double) return double[1].replace(/\\"/g, '"');
+  return null;
 }
 
 /**
  * 解析请求体 JSON 字符串
+ * 支持纯 JSON 或 curl 命令（自动提取 --data-raw/-d 部分）
  * @returns {object} 请求体对象
  */
 function parseRequestBody(bodyStr) {
   if (!bodyStr || !String(bodyStr).trim()) throw new Error('请求体不能为空');
-  const obj = JSON.parse(String(bodyStr));
+  let text = String(bodyStr).trim();
+
+  // curl 命令：提取 --data-raw / -d 后的 JSON
+  const curlBody = extractCurlBody(text);
+  if (curlBody !== null) text = curlBody;
+
+  let obj;
+  try {
+    obj = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`请求体不是有效 JSON（已尝试自动提取 curl 的 --data-raw 部分）：${e.message}`);
+  }
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
     throw new Error('请求体必须是 JSON 对象');
   }
@@ -188,4 +226,4 @@ function parseAndValidate(urlStr, bodyStr) {
   return { scene, warnings };
 }
 
-module.exports = { parseAndValidate, extractLogSearchParams, SYMBOL_TO_FILTER };
+module.exports = { parseAndValidate, parseRequestBody, extractCurlBody, extractLogSearchParams, SYMBOL_TO_FILTER };
