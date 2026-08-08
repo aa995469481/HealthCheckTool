@@ -215,7 +215,7 @@
 
 <script setup>
 import { reactive, ref, computed, onMounted } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElNotification } from 'element-plus';
 import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay } from '@element-plus/icons-vue';
 
 const credential = reactive({ configured: false, expired: false, expiredAt: '', source: '', updatedAt: '' });
@@ -462,8 +462,17 @@ async function runInspection() {
     loadAnalysis();
   } catch (e) {
     ElMessage.error(e.message || '巡检执行失败');
-    // 若因凭据过期失败，刷新凭据状态以显示过期提示
-    if (e.message && e.message.includes('凭据已过期')) loadCredentials();
+    // 刷新凭据状态：若凭据确已过期，卡片立即显示红色过期提示
+    loadCredentials();
+    if (e.message && e.message.includes('凭据')) {
+      ElNotification({
+        title: '凭据需要更新',
+        message: '执行巡检时凭据校验失败，请重新点击「Wise 登录」刷新凭据后再试',
+        type: 'warning',
+        duration: 0,
+        showClose: true
+      });
+    }
   } finally {
     running.value = false;
   }
@@ -527,8 +536,17 @@ async function runDebugQuery() {
   } catch (e) {
     debugResultText.value = '';
     ElMessage.error(e.message || '调试查询失败');
-    // 若因凭据过期失败，刷新凭据状态以显示过期提示
-    if (e.message && e.message.includes('凭据已过期')) loadCredentials();
+    // 刷新凭据状态 + 凭据过期醒目提示
+    loadCredentials();
+    if (e.message && e.message.includes('凭据')) {
+      ElNotification({
+        title: '凭据需要更新',
+        message: '调试查询时凭据校验失败，请重新点击「Wise 登录」刷新凭据后再试',
+        type: 'warning',
+        duration: 0,
+        showClose: true
+      });
+    }
   } finally {
     debugRunning.value = false;
   }
