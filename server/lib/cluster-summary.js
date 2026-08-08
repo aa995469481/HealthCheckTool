@@ -6,7 +6,8 @@
  *   - 每个字段都是独立的 1 级分析维度，各自按字段取值分组统计（并列展示，互不级联）
  *   - 字段排列顺序仅决定展示顺序，无层级含义
  *   - 每个维度统计：分组条数/占比、版本分布（_app_ver）
- *   - 小聚类：每个维度内，占比 < 1% 且条数 < 5 的分组并入「其他」，只列总条数
+ *   - Top K：每个维度仅保留条数最多的前 7 个分组，其余并入「其他」只列总条数与组数
+ *   - 小聚类：每个维度内，占比 < 1% 且条数 < 5 的分组同样并入「其他」
  *   - 代表样本：每个维度每组抽取 2 条（信息全 + 覆盖不同版本/时段）
  *
  * 产出：结构化 JSON（前端多维度表格 + 大模型分析共用），并附 toMarkdown() 文本供喂模型
@@ -145,11 +146,18 @@ function buildClusterSummary(scene, records) {
     // 小聚类合并（占比 < 1% 且条数 < 5 -> 其他）
     const SMALL_PERCENT = 1;
     const SMALL_COUNT = 5;
+    // 每个维度仅保留条数 Top 7，其余并入其他
+    const TOP_K = 7;
+    const sorted = raw.slice().sort((a, b) => b.count - a.count);
     const groups = [];
     let othersCount = 0;
-    for (const g of raw) {
-      if (g.percent < SMALL_PERCENT && g.count < SMALL_COUNT) {
+    let othersGroups = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      const g = sorted[i];
+      const isSmall = g.percent < SMALL_PERCENT && g.count < SMALL_COUNT;
+      if (i >= TOP_K || isSmall) {
         othersCount += g.count;
+        othersGroups++;
       } else {
         groups.push(g);
       }
@@ -159,7 +167,9 @@ function buildClusterSummary(scene, records) {
     return {
       field,
       groups,
-      others: othersCount > 0 ? { count: othersCount, note: '占比<1%且条数<5的小聚类合并' } : null
+      others: othersCount > 0
+        ? { count: othersCount, groups: othersGroups, note: '仅保留 Top 7，其余并入此处' }
+        : null
     };
   }
 
@@ -202,7 +212,7 @@ function toMarkdown(summary) {
       }
     }
     if (dim.others) {
-      lines.push(`- 其他小聚类：${dim.others.count} 条（占比小，未细分）`);
+      lines.push(`- 其他（其余 ${dim.others.groups} 个分组共 ${dim.others.count} 条，占比小/超出 Top 7，未细分）`);
     }
     lines.push('');
   }

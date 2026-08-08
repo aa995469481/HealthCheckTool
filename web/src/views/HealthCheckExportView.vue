@@ -163,8 +163,8 @@
 
         <div v-for="dim in (s.dimensions || [])" :key="dim.field" class="cluster-dim">
           <div class="cluster-dim-title">
-            维度「{{ dim.field }}」按字段取值分组
-            <el-tag v-if="dim.others" size="small" type="warning">其他小聚类 {{ dim.others.count }} 条</el-tag>
+            维度「{{ dim.field }}」按字段取值分组（Top 7）
+            <el-tag v-if="dim.others" size="small" type="warning">其他 {{ dim.others.groups }} 组共 {{ dim.others.count }} 条</el-tag>
           </div>
           <el-table :data="dim.groups" border size="small" class="cluster-table">
             <el-table-column label="取值" min-width="160">
