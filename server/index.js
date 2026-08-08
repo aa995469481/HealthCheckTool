@@ -182,7 +182,7 @@ app.delete('/api/tasks/:id', (req, res) => {
 });
 
 /* ---------- 启动 ---------- */
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`[start] server listening on http://localhost:${PORT}`);
   console.log('============================================');
   console.log('  业务巡检管理系统 - 后端服务已启动');
@@ -190,3 +190,7 @@ app.listen(PORT, () => {
   console.log(`  日志文件: ${logger.currentLogFile()}`);
   console.log('============================================');
 });
+
+// wise-login 需等待用户手动登录（可达数分钟），放宽请求超时
+server.requestTimeout = 6 * 60 * 1000;
+server.headersTimeout = 6 * 60 * 1000;

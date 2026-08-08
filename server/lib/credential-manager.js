@@ -1,159 +1,163 @@
 /**
- * 凭据管理器 - 登录固定网址，从响应头提取 cookie + x-csrf-token，保存到 secrets.yaml
+ * 凭据管理器 - 拉起系统浏览器完成 Wise DevOps 手动登录（SSO + 短信验证码），
+ * 登录成功后自动提取 cookie + x-csrf-token，保存到 secrets.yaml
  *
  * 流程：
- *   1. 请求 config.loginUrl（登录固定网址）
- *   2. 手动跟随所有重定向（SSO/IAM 跳转链），每一跳都收集 Set-Cookie，
- *      并把已收集的 cookie 传给下一跳（模拟浏览器行为）
- *   3. 从响应头提取 x-csrf-token（或按 config.csrfTokenBodyPath 从最终响应体取）
- *   4. 保存到 server/data/secrets.yaml
+ *   1. puppeteer-core 拉起系统 Chrome/Edge（可见窗口）
+ *   2. 打开 config.loginUrl，用户手动完成登录（输手机号、短信验证码）
+ *   3. 轮询检测登录成功标志 cookie 出现
+ *   4. 登录成功后监听页面请求，捕获 x-csrf-token 请求头
+ *   5. 收集浏览器全部 cookie，保存到 server/data/secrets.yaml
  *
- * 说明：不使用全局 fetch —— redirect:'follow' 会丢弃中间跳转的 Set-Cookie，
- *       redirect:'manual' 又返回无头的 opaqueredirect，因此用原生 https 模块手动跟随。
+ * 依赖：puppeteer-core（复用系统浏览器，不下载 Chromium）
  */
-const https = require('https');
-const http = require('http');
 const config = require('../config');
 const { logger } = require('./logger');
 const secretsStore = require('./secrets-store');
 
-/** 浏览器模拟请求头 */
-function browserHeaders(cookie) {
-  const h = {
-    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'accept-language': 'zh-CN,zh;q=0.9',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-    'sec-fetch-dest': 'document',
-    'sec-fetch-mode': 'navigate',
-    'sec-fetch-site': 'none'
-  };
-  if (cookie) h['cookie'] = cookie;
-  return h;
+let puppeteer = null;
+try {
+  puppeteer = require('puppeteer-core');
+} catch (e) {
+  logger.warn('[credential] puppeteer-core not installed yet');
 }
 
-/**
- * 原生 HTTP GET（返回完整响应头，支持超时与响应体大小限制）
- */
-function httpGet(urlStr, headers, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    let req;
-    try {
-      const lib = urlStr.startsWith('https:') ? https : http;
-      req = lib.get(urlStr, { headers, timeout: timeoutMs }, (res) => {
-        let body = '';
-        let tooLarge = false;
-        res.setEncoding('utf-8');
-        res.on('data', (chunk) => {
-          body += chunk;
-          if (body.length > 512 * 1024) {
-            tooLarge = true;
-            req.destroy();
-          }
-        });
-        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: tooLarge ? '' : body }));
-      });
-    } catch (e) {
-      return reject(e);
-    }
-    req.on('timeout', () => req.destroy(new Error('request timeout')));
-    req.on('error', (e) => reject(e));
-  });
-}
-
-/** 从 Set-Cookie 头列表中提取 cookie 字符串（Node 的 headers['set-cookie'] 是数组） */
-function extractCookieFromHeaders(setCookieHeaders) {
-  if (!Array.isArray(setCookieHeaders) || setCookieHeaders.length === 0) return '';
+/** 从 cookie 对象数组拼接 cookie 字符串（name=value; ...） */
+function cookieToString(cookies) {
   const parts = [];
-  for (const raw of setCookieHeaders) {
-    // Set-Cookie: name=value; Path=/; HttpOnly ... -> 只取第一个分号前的 name=value
-    const first = String(raw).split(';')[0].trim();
-    if (first && !parts.includes(first)) parts.push(first);
+  for (const c of cookies || []) {
+    if (c.name && c.value && !parts.includes(`${c.name}=${c.value}`)) {
+      parts.push(`${c.name}=${c.value}`);
+    }
   }
   return parts.join('; ');
 }
 
-/** 按点号路径从对象取值，如 'data.csrfToken' */
-function pickByPath(obj, pathStr) {
-  if (!pathStr) return '';
-  return pathStr.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
-}
-
 /**
- * 执行登录并提取凭据
- * @returns {{ cookie: string, xCsrfToken: string, responseStatus: number }}
+ * 执行浏览器手动登录并提取凭据
+ * @returns {{ cookie: string, xCsrfToken: string }}
  */
 async function loginAndFetchCredentials() {
   if (!config.loginUrl) {
-    throw new Error('登录网址未配置（server/config.js 的 loginUrl 为空），请先填入固定登录网址');
+    throw new Error('登录网址未配置（server/config.js 的 loginUrl 为空）');
+  }
+  if (!puppeteer) {
+    throw new Error('puppeteer-core 未安装，请先执行 npm install（start.bat 会自动处理）');
+  }
+  if (!config.browser.executablePath) {
+    throw new Error('未检测到 Chrome/Edge，请在 server/config.js 的 browser.executablePath 手动指定浏览器路径');
   }
 
-  logger.info(`[credential] login start url=${config.loginUrl}`);
+  logger.info(`[credential] browser login start url=${config.loginUrl} browser=${config.browser.executablePath}`);
 
-  const maxRedirects = 10;
-  let url = config.loginUrl;
-  const cookieJar = []; // 已收集的 name=value 列表
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      executablePath: config.browser.executablePath,
+      headless: config.browser.headless,
+      defaultViewport: null,
+      args: ['--start-maximized', '--disable-infobars']
+    });
+  } catch (e) {
+    logger.error('[credential] launch browser failed', e);
+    throw new Error(`拉起浏览器失败：${e.message}`);
+  }
+
+  const page = await browser.newPage();
   let csrfToken = '';
-  let finalStatus = 0;
-  const hops = [];
 
-  for (let hop = 0; hop <= maxRedirects; hop++) {
-    const cookie = cookieJar.join('; ');
-    let res;
+  // 监听页面所有请求，捕获 x-csrf-token 请求头
+  const csrfListener = (req) => {
     try {
-      res = await httpGet(url, browserHeaders(cookie), config.loginTimeoutMs);
-    } catch (e) {
-      logger.error(`[credential] request failed hop=${hop} url=${url}`, e);
-      throw new Error(`登录请求失败（第 ${hop} 跳）：${e.message}`);
-    }
-
-    // 收集本跳 Set-Cookie
-    const setCookies = Array.isArray(res.headers['set-cookie']) ? res.headers['set-cookie'] : [];
-    for (const raw of setCookies) {
-      const pair = String(raw).split(';')[0].trim();
-      if (pair && !cookieJar.includes(pair)) cookieJar.push(pair);
-    }
-
-    // 收集本跳 x-csrf-token（任一跳出现即用）
-    if (!csrfToken) {
-      csrfToken = res.headers[config.csrfTokenHeaderName] || '';
-    }
-
-    hops.push({ hop, status: res.status, url, setCookies: setCookies.length });
-    logger.info(
-      `[credential] hop=${hop} status=${res.status} setCookies=${setCookies.length} cookieTotal=${cookieJar.length} url=${url}`
-    );
-
-    // 处理重定向
-    const loc = res.headers['location'];
-    if (res.status >= 300 && res.status < 400 && loc) {
-      url = new URL(loc, url).toString();
-      logger.info(`[credential] redirect ${res.status} -> ${url}`);
-      continue;
-    }
-
-    // 最终响应
-    finalStatus = res.status;
-    if (!csrfToken && config.csrfTokenBodyPath) {
-      try {
-        csrfToken = pickByPath(JSON.parse(res.body || '{}'), config.csrfTokenBodyPath) || '';
-      } catch (e) {
-        logger.warn('[credential] parse csrf from body failed', e.message);
+      const h = req.headers()[config.csrfTokenHeaderName];
+      if (h && !csrfToken) {
+        csrfToken = h;
+        logger.info('[credential] captured x-csrf-token from page request');
       }
+    } catch (e) {
+      /* ignore */
     }
-    break;
+  };
+  page.on('request', csrfListener);
+
+  try {
+    await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    logger.warn(`[credential] goto ${config.loginUrl} warn`, e.message);
   }
 
-  const cookie = cookieJar.join('; ');
+  logger.info('[credential] browser opened, waiting for manual login (phone + SMS code)...');
+
+  // 轮询等待登录成功标志 cookie
+  const deadline = Date.now() + config.loginTimeoutMs;
+  let loggedIn = false;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    let cookies = [];
+    try {
+      cookies = await page.cookies();
+    } catch (e) {
+      // 页面可能已关闭
+      logger.warn('[credential] read cookies failed', e.message);
+      break;
+    }
+    const names = cookies.map((c) => c.name);
+    const hit = config.loginSuccessCookieNames.filter((n) => {
+      const c = cookies.find((x) => x.name === n);
+      return c && c.value;
+    });
+    if (hit.length > 0) {
+      logger.info(`[credential] login detected by cookies: ${hit.join(',')}`);
+      loggedIn = true;
+      break;
+    }
+    // 页面被用户关闭则放弃
+    if (page.isClosed()) break;
+  }
+
+  if (!loggedIn) {
+    await browser.close().catch(() => {});
+    throw new Error(`登录超时（${Math.round(config.loginTimeoutMs / 60000)} 分钟内未检测到登录成功），请重试`);
+  }
+
+  // 停留片刻，等待页面加载完成后的请求带出 x-csrf-token
+  if (!csrfToken) {
+    logger.info(`[credential] waiting ${config.browser.settleMs}ms for csrf token...`);
+    await new Promise((r) => setTimeout(r, config.browser.settleMs));
+  }
+
+  // 仍未捕获到 csrf：刷新页面强制触发一轮新请求（通常携带 x-csrf-token）
+  if (!csrfToken && !page.isClosed()) {
+    logger.info('[credential] csrf not captured, reloading page to trigger requests...');
+    try {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      await new Promise((r) => setTimeout(r, config.browser.settleMs));
+    } catch (e) {
+      logger.warn('[credential] reload page failed', e.message);
+    }
+  }
+
+  // 收集全部 cookie
+  let cookies = [];
+  try {
+    cookies = await page.cookies();
+  } catch (e) {
+    logger.warn('[credential] collect cookies failed', e.message);
+  }
+  const cookie = cookieToString(cookies);
+
+  await browser.close().catch(() => {});
+  page.removeListener('request', csrfListener);
+
   logger.info(
-    `[credential] login done finalStatus=${finalStatus} hops=${hops.length} cookieLen=${cookie.length} csrfLen=${csrfToken.length}`
+    `[credential] login done cookieLen=${cookie.length} cookieCount=${cookies.length} csrfLen=${csrfToken.length}`
   );
-  logger.info(`[credential] cookie names: ${cookieJar.map((c) => c.split('=')[0]).join(',') || '(none)'}`);
 
   if (!cookie || !csrfToken) {
-    throw new Error(`凭据提取不完整：cookie=${cookie ? 'ok' : '空'} csrf=${csrfToken ? 'ok' : '空'}，请查看日志中 [credential] hop 记录了解跳转过程`);
+    throw new Error(`凭据提取不完整：cookie=${cookie ? 'ok' : '空'} csrf=${csrfToken ? 'ok' : '空'}，请检查登录是否成功`);
   }
 
-  return { cookie, xCsrfToken: csrfToken, responseStatus: finalStatus };
+  return { cookie, xCsrfToken: csrfToken };
 }
 
 /** 登录并保存凭据 */
@@ -163,4 +167,4 @@ async function loginAndSave() {
   return secretsStore.getStatus();
 }
 
-module.exports = { loginAndFetchCredentials, loginAndSave, extractCookieFromHeaders };
+module.exports = { loginAndFetchCredentials, loginAndSave, cookieToString };

@@ -214,6 +214,12 @@ async function loadCredentials() {
 async function wiseLogin() {
   loggingIn.value = true;
   try {
+    ElMessage({
+      message: '浏览器窗口已打开（或即将打开），请在弹出的浏览器中完成登录（手机号 + 短信验证码）。登录成功后本页面将自动更新。',
+      type: 'info',
+      duration: 8000,
+      showClose: true
+    });
     const data = await request('/api/health-check/wise-login', { method: 'POST' });
     credential.configured = data.configured;
     credential.source = data.source || '';

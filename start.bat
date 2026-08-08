@@ -44,7 +44,7 @@ if %NODE_MAJOR% LSS 18 (
 echo.
 
 rem ---------- 2. Install dependencies if not complete ----------
-if exist "server\node_modules\express" goto :web_deps
+if exist "server\node_modules\express" if exist "server\node_modules\puppeteer-core" goto :web_deps
 echo [2/4] Installing server dependencies...
 call :npm_install server
 if errorlevel 1 (
