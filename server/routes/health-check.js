@@ -26,6 +26,8 @@ const clusterSummary = require('../lib/cluster-summary');
 const aiConfig = require('../lib/ai-config-store');
 const reportGenerator = require('../lib/report-generator');
 const correctionStore = require('../lib/correction-store');
+const emlExport = require('../lib/eml-export');
+const emailConfigStore = require('../lib/email-config-store');
 
 const router = express.Router();
 
@@ -404,6 +406,48 @@ router.delete('/ai-corrections/:id', (req, res) => {
   const ok = correctionStore.deleteCorrection(req.params.id);
   if (!ok) return res.json({ code: 1, msg: '矫正意见不存在' });
   res.json({ code: 0, msg: 'ok' });
+});
+
+/* ---------- 10. 邮件配置：读取（主送/抄送/主题默认值） ---------- */
+router.get('/email-config', (req, res) => {
+  const cfg = emailConfigStore.getConfig();
+  logger.info(`[email-config] get -> to=${cfg.to ? '有' : '空'} cc=${cfg.cc ? '有' : '空'} subject=${cfg.subject ? '有' : '空'}`);
+  res.json({ code: 0, msg: 'ok', data: cfg });
+});
+
+/* ---------- 10.1 邮件配置：保存 ---------- */
+router.post('/email-config', (req, res) => {
+  const { to, cc, subject } = req.body || {};
+  const cfg = emailConfigStore.saveConfig({ to, cc, subject });
+  res.json({ code: 0, msg: 'ok', data: cfg });
+});
+
+/* ---------- 11. 导出巡检日报为 .eml 邮件文件（正文内嵌 HTML，不实际发送） ---------- */
+router.post('/ai-report-eml', (req, res) => {
+  const { to, cc, subject, html } = req.body || {};
+  try {
+    if (!html || !String(html).trim()) {
+      return res.json({ code: 1, msg: '缺少日报 HTML 内容' });
+    }
+    const toList = emlExport.parseAddresses(to);
+    if (toList.length === 0) {
+      return res.json({ code: 1, msg: '请至少填写一个主送收件人邮箱' });
+    }
+    const finalSubject = subject && String(subject).trim() ? String(subject).trim() : '业务巡检日报';
+    const eml = emlExport.buildEml({ to: toList.join(','), cc, subject: finalSubject, html: String(html) });
+    const now = new Date();
+    const stamp =
+      `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}` +
+      `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    const filename = `business-inspection-report-${stamp}.eml`;
+    logger.info(`[ai-report-eml] generate to=${toList.length}人 cc=${cc ? '有' : '无'} subjectLen=${finalSubject.length} emlSize=${eml.length}B filename=${filename}`);
+    res.setHeader('Content-Type', 'message/rfc822; charset=UTF-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(Buffer.from(eml, 'utf-8'));
+  } catch (e) {
+    logger.error('[ai-report-eml] failed', e);
+    res.json({ code: 1, msg: '生成邮件失败：' + (e.message || '未知错误') });
+  }
 });
 
 module.exports = router;

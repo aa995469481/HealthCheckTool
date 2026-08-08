@@ -239,6 +239,12 @@
               :icon="Download"
               @click="downloadReport"
             >下载 HTML</el-button>
+            <el-button
+              v-if="aiReport"
+              size="small"
+              :icon="Message"
+              @click="openEmailDialog"
+            >导出邮件(.eml)</el-button>
           </div>
         </div>
       </template>
@@ -319,13 +325,33 @@
         <el-button type="primary" :loading="savingAi" @click="saveAiConfig">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 导出邮件(.eml) 对话框 -->
+    <el-dialog v-model="emailDialogVisible" title="导出为邮件（.eml，正文内嵌日报 HTML）" width="560px">
+      <el-form label-width="80px">
+        <el-form-item label="主送" required>
+          <el-input v-model="emailForm.to" placeholder="多个邮箱用逗号分隔，如 a@xx.com,b@yy.com" />
+        </el-form-item>
+        <el-form-item label="抄送">
+          <el-input v-model="emailForm.cc" placeholder="多个邮箱用逗号分隔（可空）" />
+        </el-form-item>
+        <el-form-item label="主题">
+          <el-input v-model="emailForm.subject" placeholder="邮件主题" />
+        </el-form-item>
+      </el-form>
+      <div class="email-hint">生成 .eml 文件后，可用 Outlook / Foxmail 等邮件客户端打开，确认无误后直接发送。</div>
+      <template #footer>
+        <el-button @click="emailDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="exportingEmail" @click="exportEml">保存并导出</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { reactive, ref, computed, onMounted } from 'vue';
 import { ElMessage, ElNotification } from 'element-plus';
-import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay, Setting, MagicStick, Cpu, Plus } from '@element-plus/icons-vue';
+import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay, Setting, MagicStick, Cpu, Plus, Message } from '@element-plus/icons-vue';
 
 const credential = reactive({ configured: false, expired: false, expiredAt: '', source: '', updatedAt: '' });
 const debugModeEnabled = ref(false);
@@ -353,6 +379,10 @@ const generating = ref(false);
 /* 人工矫正意见 */
 const corrections = ref([]);
 const correctionInput = ref('');
+/* 导出邮件(.eml) */
+const emailDialogVisible = ref(false);
+const exportingEmail = ref(false);
+const emailForm = reactive({ to: '', cc: '', subject: '' });
 /* 聚类摘要：展开的场景名列表，默认全部折叠 */
 const expandedScenes = ref([]);
 
@@ -827,6 +857,76 @@ async function removeCorrection(c) {
   }
 }
 
+/* ---------- 导出邮件(.eml) ---------- */
+async function loadEmailConfig() {
+  try {
+    const data = await request('/api/health-check/email-config');
+    emailForm.to = data.to || '';
+    emailForm.cc = data.cc || '';
+    emailForm.subject = data.subject || '';
+  } catch (e) {
+    /* 忽略加载失败，使用空表单 */
+  }
+}
+
+async function openEmailDialog() {
+  emailDialogVisible.value = true;
+  await loadEmailConfig();
+  // 主题为空时给默认值
+  if (!emailForm.subject.trim()) {
+    const d = new Date();
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const planName = analysis.value ? analysis.value.plan : '';
+    emailForm.subject = `业务巡检日报${planName ? ` - ${planName}` : ''} - ${day}`;
+  }
+}
+
+async function exportEml() {
+  if (!aiReport.value || !aiReport.value.html) {
+    ElMessage.warning('请先生成日报');
+    return;
+  }
+  if (!emailForm.to.trim()) {
+    ElMessage.warning('请填写主送收件人邮箱');
+    return;
+  }
+  exportingEmail.value = true;
+  try {
+    // 保存配置，供下次预填
+    await request('/api/health-check/email-config', {
+      method: 'POST',
+      body: JSON.stringify({ to: emailForm.to, cc: emailForm.cc, subject: emailForm.subject })
+    });
+    // 生成 .eml 并下载
+    const res = await fetch('/api/health-check/ai-report-eml', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: emailForm.to, cc: emailForm.cc, subject: emailForm.subject, html: aiReport.value.html })
+    });
+    const contentType = res.headers.get('Content-Type') || '';
+    if (contentType.includes('message/rfc822')) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `巡检日报-${new Date().toISOString().slice(0, 10)}.eml`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      ElMessage.success('邮件文件已生成，可用 Outlook / Foxmail 打开后发送');
+      emailDialogVisible.value = false;
+    } else {
+      const json = await res.json();
+      throw new Error(json.msg || '生成邮件失败');
+    }
+  } catch (e) {
+    ElMessage.error(e.message || '生成邮件失败');
+  } finally {
+    exportingEmail.value = false;
+  }
+}
+
 onMounted(() => {
   loadCredentials();
   loadScenarios();
@@ -1094,6 +1194,13 @@ onMounted(() => {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.email-hint {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.6;
+  margin-top: -4px;
+  padding: 0 2px;
 }
 .ai-generating {
   padding: 24px 8px;
