@@ -110,11 +110,22 @@
           <div class="card-actions">
             <el-button size="small" :icon="Search" @click="previewRequestBody">生成请求体</el-button>
             <el-button size="small" :icon="CopyDocument" @click="copyRequestBody">复制请求体</el-button>
+            <el-button
+              size="small"
+              type="primary"
+              :icon="VideoPlay"
+              :loading="debugRunning"
+              @click="runDebugQuery"
+            >执行巡检（调试）</el-button>
           </div>
         </div>
       </template>
-      <div class="debug-hint">此请求体为执行巡检时发送给 ClickHouse 的完整内容（cookie / x-csrf-token 由后端自动注入，不在此展示）。</div>
+      <div class="debug-hint">此请求体为执行巡检时发送给 ClickHouse 的完整内容（cookie / x-csrf-token 由后端自动注入，不在此展示）。「执行巡检（调试）」不依赖场景勾选，直接对 wallet_client_hmos 表发起真实查询。</div>
       <pre class="debug-body">{{ requestBodyText || '（点击「生成请求体」查看完整请求体）' }}</pre>
+      <div v-if="debugResultText" class="debug-result">
+        <div class="debug-result-title">调试查询结果</div>
+        <pre class="debug-body">{{ debugResultText }}</pre>
+      </div>
     </el-card>
 
     <!-- 巡检结果卡片 -->
@@ -176,7 +187,7 @@
 <script setup>
 import { reactive, ref, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Refresh, Search, Download, CopyDocument, Connection } from '@element-plus/icons-vue';
+import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay } from '@element-plus/icons-vue';
 
 const credential = reactive({ configured: false, source: '', updatedAt: '' });
 const loggingIn = ref(false);
@@ -189,6 +200,8 @@ const dateRange = ref(null);
 const running = ref(false);
 const result = ref(null);
 const requestBodyText = ref('');
+const debugRunning = ref(false);
+const debugResultText = ref('');
 
 const plan = reactive({
   name: '',
@@ -406,6 +419,30 @@ async function copyRequestBody() {
   }
 }
 
+async function runDebugQuery() {
+  debugRunning.value = true;
+  debugResultText.value = '';
+  try {
+    const data = await request('/api/health-check/debug/run-query', {
+      method: 'POST',
+      body: JSON.stringify({
+        profile: {
+          app_ver: plan.app_ver,
+          beginTimestamp: dateRange.value ? dateRange.value[0] : '',
+          endTimestamp: dateRange.value ? dateRange.value[1] : ''
+        }
+      })
+    });
+    debugResultText.value = JSON.stringify(data, null, 2);
+    ElMessage.success('调试查询完成');
+  } catch (e) {
+    debugResultText.value = '';
+    ElMessage.error(e.message || '调试查询失败');
+  } finally {
+    debugRunning.value = false;
+  }
+}
+
 function downloadJson() {
   const blob = new Blob([JSON.stringify(result.value, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -487,6 +524,15 @@ onMounted(() => {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.debug-result {
+  margin-top: 12px;
+}
+.debug-result-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 8px;
 }
 .profile-form {
   margin-bottom: 8px;

@@ -205,6 +205,37 @@ router.post('/debug/request-body', (req, res) => {
   }
 });
 
+/* ---------- 5.2 调试：直接执行单次真实查询（不依赖场景勾选，用于快速定位问题） ---------- */
+router.post('/debug/run-query', async (req, res) => {
+  const { profile } = req.body || {};
+  logger.info(`[debug/run-query] start range=${(profile && profile.beginTimestamp) || '-'} ~ ${(profile && profile.endTimestamp) || '-'}`);
+  try {
+    const q = await clickhouse.queryWithTotal({
+      name: 'wallet_client_hmos',
+      cluster: 'ulan1-aiops-ch-az1-4',
+      beginTimestamp: profile && profile.beginTimestamp,
+      endTimestamp: profile && profile.endTimestamp,
+      app_ver: profile && profile.app_ver
+    });
+    const first = q.records[0] || {};
+    logger.info(`[debug/run-query] done total=${q.total} fetched=${q.records.length} pages=${q.pages}`);
+    res.json({
+      code: 0,
+      msg: 'ok',
+      data: {
+        total: q.total,
+        fetched: q.records.length,
+        pages: q.pages,
+        histogramCount: q.histogram.length,
+        sample: first
+      }
+    });
+  } catch (e) {
+    logger.error('[debug/run-query] failed', e);
+    res.json({ code: 1, msg: '查询失败：' + (e.message || '未知错误') });
+  }
+});
+
 /* ---------- 6. 读取缓存数据（调试用） ---------- */
 router.get('/cache/:id', (req, res) => {
   const data = getCache(req.params.id);

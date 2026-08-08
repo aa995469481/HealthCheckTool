@@ -2,14 +2,18 @@
  * ClickHouse 真实数据查询客户端 - 调用 Wise DevOps queryWithTotal 接口
  *
  * 特性：
+ *   - 通过系统 curl.exe 发送请求（格式完全对齐浏览器生成的 curl，规避网关拦截）
  *   - 请求体完全对齐用户提供的真实请求（filterCondition 过滤结构）
  *   - 请求头除 cookie / x-csrf-token 外全部固定（对齐用户提供的 curl）
- *   - 完整请求体与响应体写入日志（便于问题定位）
+ *   - 完整请求体 / curl 命令 / 响应体写入日志（便于问题定位）
  *   - 支持分页拉取（pageSize 500，自动翻页直到取完 total）
  *   - 凭据从 server/data/secrets.yaml 读取
  */
-const https = require('https');
+const { execFile } = require('child_process');
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const config = require('../config');
 const { logger } = require('./logger');
 const secretsStore = require('./secrets-store');
@@ -59,60 +63,55 @@ function toTimestampMs(dateStr, isEnd) {
   return new Date(`${String(dateStr)}T${isEnd ? '23:59:59' : '00:00:00'}+08:00`).getTime();
 }
 
-/** POST JSON 请求（返回完整响应体字符串与状态码） */
-function httpJsonPost(urlStr, headers, bodyObj, timeoutMs) {
+/**
+ * 通过系统 curl.exe 发送 POST JSON 请求
+ * 返回 { status:number, body:string }
+ */
+function curlJsonPost(urlStr, headers, bodyObj, timeoutMs) {
   return new Promise((resolve, reject) => {
-    let req;
-    let receivedBytes = 0;
-    let resolved = false;
-    const stage = { dns: '-', tcp: '-', tls: '-', headers: '-' };
-    try {
-      const url = new URL(urlStr);
-      const payload = JSON.stringify(bodyObj);
-      const h = {
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(payload),
-        ...headers
-      };
-      req = https.request(
-        url,
-        { method: 'POST', headers: h, timeout: timeoutMs },
-        (res) => {
-          stage.headers = 'yes';
-          let body = '';
-          res.setEncoding('utf-8');
-          res.on('data', (c) => {
-            body += c;
-            receivedBytes = Buffer.byteLength(body);
-            if (body.length > 20 * 1024 * 1024) {
-              req.destroy();
-              reject(new Error('响应体超过 20MB'));
-            }
-          });
-          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
-        }
-      );
-      req.on('socket', (socket) => {
-        socket.on('lookup', () => (stage.dns = 'yes'));
-        socket.on('connect', () => (stage.tcp = 'yes'));
-        socket.on('secureConnect', () => (stage.tls = 'yes'));
-      });
-    } catch (e) {
-      return reject(e);
+    const payload = JSON.stringify(bodyObj);
+    const bodyFile = path.join(os.tmpdir(), `hcb-body-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
+
+    const args = ['-s', '-S', '--max-time', String(Math.floor(timeoutMs / 1000))];
+    for (const [k, v] of Object.entries(headers)) {
+      if (v === undefined || v === null) continue;
+      args.push('-H', `${k}: ${v}`);
     }
-    req.on('timeout', () => {
-      resolved = true;
-      // 记录连接阶段与已接收字节数，判断卡在 DNS/TCP/TLS 还是服务器挂起
-      req.destroy(
-        new Error(
-          `request timeout after ${timeoutMs}ms, receivedBytes=${receivedBytes}, stage={dns:${stage.dns}, tcp:${stage.tcp}, tls:${stage.tls}, headers:${stage.headers}}`
-        )
-      );
-    });
-    req.on('error', (e) => {
-      if (!resolved) reject(e);
-    });
-    req.end();
+    args.push('--data-raw', payload, '-o', bodyFile, '-w', '%{http_code}', urlStr);
+
+    // 完整命令日志（cookie 值较长，便于定位请求差异）
+    logger.info(`[clickhouse] CURL CMD:\ncurl ${args.map((a) => `"${a}"`).join(' ')}`);
+
+    execFile(
+      'curl',
+      args,
+      { timeout: timeoutMs, maxBuffer: 20 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        let body = '';
+        try {
+          body = fs.readFileSync(bodyFile, 'utf-8');
+        } catch (e) {
+          body = '';
+        }
+        try {
+          fs.unlinkSync(bodyFile);
+        } catch (e) {
+          /* ignore */
+        }
+
+        const httpCode = String(stdout || '').trim();
+
+        if (err) {
+          if (err.killed) {
+            return reject(new Error(`curl timeout after ${timeoutMs}ms`));
+          }
+          // curl 进程非零退出，输出 stderr 辅助定位
+          const detail = (stderr || err.message || '').toString().slice(0, 2000);
+          return reject(new Error(`curl failed: ${detail}`));
+        }
+        resolve({ status: Number(httpCode) || 200, body });
+      }
+    );
   });
 }
 
@@ -176,7 +175,7 @@ function buildRequestBody(opts = {}) {
 
 /**
  * 查询一次（单页），完整记录请求体与响应体日志
- * @returns {Promise<{status:number, total:number, records:Array, histogram:Array}>}
+ * @returns {Promise<{status:number, total:number, records:Array, histogram:Array, rawBody:string}>}
  */
 async function queryOnce(requestBody) {
   const cred = secretsStore.getCredentialPair();
@@ -187,7 +186,7 @@ async function queryOnce(requestBody) {
   const headers = buildRequestHeaders(cred.cookie, cred.xCsrfToken);
   logger.info(`[clickhouse] === REQUEST BODY (page=${requestBody.pageNo}) ===\n${JSON.stringify(requestBody, null, 2)}`);
 
-  const res = await httpJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
+  const res = await curlJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
 
   logger.info(`[clickhouse] === RESPONSE status=${res.status} (page=${requestBody.pageNo}) ===`);
   try {
@@ -197,7 +196,7 @@ async function queryOnce(requestBody) {
   }
 
   if (res.status !== 200) {
-    throw new Error(`查询接口返回异常状态码 ${res.status}`);
+    throw new Error(`查询接口返回异常状态码 ${res.status}：${String(res.body).slice(0, 500)}`);
   }
 
   let json;
@@ -210,7 +209,8 @@ async function queryOnce(requestBody) {
     status: res.status,
     total: Number(json.total) || 0,
     records: Array.isArray(json.result) ? json.result : [],
-    histogram: Array.isArray(json.histogram) ? json.histogram : []
+    histogram: Array.isArray(json.histogram) ? json.histogram : [],
+    rawBody: res.body
   };
 }
 
@@ -227,6 +227,7 @@ async function queryWithTotal(params = {}) {
   let histogram = [];
   let total = 0;
   let pages = 0;
+  let rawBodies = [];
 
   for (let pageNo = 1; pageNo <= MAX_PAGES; pageNo++) {
     const requestBody = buildRequestBody({
@@ -244,19 +245,22 @@ async function queryWithTotal(params = {}) {
     allRecords.push(...page.records);
     total = page.total;
     if (page.histogram.length) histogram = page.histogram;
+    if (page.rawBody) rawBodies.push(page.rawBody);
 
     logger.info(`[clickhouse] page=${pageNo} got=${page.records.length} accumulated=${allRecords.length} total=${total}`);
     // 已取完或该页为空
     if (allRecords.length >= total || page.records.length === 0) break;
   }
 
-  return { total, records: allRecords, histogram, pages, beginTimestamp, endTimestamp };
+  return { total, records: allRecords, histogram, pages, beginTimestamp, endTimestamp, rawBodies };
 }
 
 module.exports = {
   QUERY_URL,
   PAGE_SIZE,
   buildRequestBody,
+  buildRequestHeaders,
+  queryOnce,
   queryWithTotal,
   toTimestampMs,
   PILOT_FILTER_CONDITION
