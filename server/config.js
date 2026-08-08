@@ -31,9 +31,9 @@ module.exports = {
   // 注意：需小于 index.js 中 server.requestTimeout（已设为 6 分钟）
   loginTimeoutMs: 4 * 60 * 1000, // 4 分钟
 
-  // 单次 ClickHouse 查询超时（毫秒）：真实查询大范围数据可能较慢
-  // 注意：需小于 index.js 中 server.requestTimeout（已设为 10 分钟）
-  queryTimeoutMs: 5 * 60 * 1000, // 5 分钟
+  // 单次 ClickHouse 查询超时（毫秒）：符合条件的数据量小，正常应几秒内返回，
+  // 超过 1 分钟视为异常（网络/网关/凭据问题），避免长时间挂起
+  queryTimeoutMs: 1 * 60 * 1000, // 1 分钟
 
   // 判定登录成功的标志 cookie 名称（出现且非空即视为登录成功）
   loginSuccessCookieNames: [

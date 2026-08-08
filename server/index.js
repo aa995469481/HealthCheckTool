@@ -191,6 +191,6 @@ const server = app.listen(PORT, () => {
   console.log('============================================');
 });
 
-// 手动登录（可达数分钟）与 ClickHouse 真实查询（大范围数据较慢）均需较长超时
+// 手动登录（可达数分钟）与 ClickHouse 查询均需较长超时
 server.requestTimeout = 10 * 60 * 1000;
 server.headersTimeout = 10 * 60 * 1000;
