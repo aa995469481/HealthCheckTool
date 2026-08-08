@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# 敏感凭据，禁止推送
+server/data/secrets.yaml

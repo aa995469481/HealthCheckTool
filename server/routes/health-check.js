@@ -12,6 +12,8 @@ const crypto = require('crypto');
 const { logger } = require('../lib/logger');
 const mock = require('../lib/mock-inspection');
 const profileStore = require('../lib/profile-store');
+const secretsStore = require('../lib/secrets-store');
+const credentialManager = require('../lib/credential-manager');
 
 const router = express.Router();
 
@@ -45,8 +47,32 @@ function getCache(id) {
 
 /* ---------- 1. 凭据状态 ---------- */
 router.get('/credentials', (req, res) => {
-  const status = mock.getCredentialStatus();
+  const status = secretsStore.getStatus();
   logger.info(`[credentials] status -> configured=${status.configured} source=${status.source}`);
+  res.json({ code: 0, msg: 'ok', data: status });
+});
+
+/* ---------- 1.1 触发 Wise 登录，自动获取凭据 ---------- */
+router.post('/wise-login', async (req, res) => {
+  try {
+    logger.info('[wise-login] triggered');
+    const status = await credentialManager.loginAndSave();
+    res.json({ code: 0, msg: 'ok', data: status });
+  } catch (e) {
+    logger.error('[wise-login] failed', e);
+    res.json({ code: 1, msg: e.message || '登录失败' });
+  }
+});
+
+/* ---------- 1.2 手动保存凭据（回退方案） ---------- */
+router.post('/secrets', (req, res) => {
+  const { cookie, xCsrfToken } = req.body || {};
+  if (!cookie || !xCsrfToken) {
+    return res.json({ code: 1, msg: 'cookie 和 x-csrf-token 均不能为空' });
+  }
+  secretsStore.saveSecrets({ cookie: String(cookie).trim(), xCsrfToken: String(xCsrfToken).trim(), source: 'manual' });
+  const status = secretsStore.getStatus();
+  logger.info(`[secrets] manual save -> configured=${status.configured}`);
   res.json({ code: 0, msg: 'ok', data: status });
 });
 

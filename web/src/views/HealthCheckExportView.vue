@@ -5,16 +5,38 @@
       <template #header>
         <div class="card-header">
           <span>凭据设置</span>
-          <el-button size="small" :icon="Refresh" @click="loadCredentials">刷新状态</el-button>
+          <div class="card-actions">
+            <el-button size="small" type="primary" :icon="Connection" :loading="loggingIn" @click="wiseLogin">
+              Wise 登录
+            </el-button>
+            <el-button size="small" :icon="Refresh" @click="loadCredentials">刷新状态</el-button>
+          </div>
         </div>
       </template>
       <div class="credential-row">
         <span class="dot" :class="credential.configured ? 'dot-green' : 'dot-yellow'"></span>
         <span class="credential-text">
-          {{ credential.configured ? '凭据已配置' : '凭据未配置（当前为 Mock 模式）' }}
+          {{ credential.configured ? '凭据已配置' : '凭据未配置，请点击「Wise 登录」自动获取，或手动粘贴' }}
         </span>
         <el-tag v-if="credential.source" size="small" type="info">{{ credential.source }}</el-tag>
+        <el-tag v-if="credential.updatedAt" size="small" type="warning">更新于 {{ credential.updatedAt }}</el-tag>
       </div>
+
+      <el-collapse class="credential-collapse">
+        <el-collapse-item title="高级：手动粘贴 Cookie（回退方案）">
+          <el-form label-width="120px">
+            <el-form-item label="Cookie">
+              <el-input v-model="manualForm.cookie" type="textarea" :rows="3" placeholder="从 F12 → Network → 请求头中复制 Cookie" />
+            </el-form-item>
+            <el-form-item label="x-csrf-token">
+              <el-input v-model="manualForm.xCsrfToken" placeholder="从 F12 → Network → 请求头中复制 x-csrf-token" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" size="small" :loading="savingSecrets" @click="saveSecrets">保存到 secrets.yaml</el-button>
+            </el-form-item>
+          </el-form>
+        </el-collapse-item>
+      </el-collapse>
     </el-card>
 
     <!-- 巡检计划卡片 -->
@@ -140,9 +162,12 @@
 <script setup>
 import { reactive, ref, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Refresh, Search, Download, CopyDocument } from '@element-plus/icons-vue';
+import { Refresh, Search, Download, CopyDocument, Connection } from '@element-plus/icons-vue';
 
-const credential = reactive({ configured: false, source: '' });
+const credential = reactive({ configured: false, source: '', updatedAt: '' });
+const loggingIn = ref(false);
+const savingSecrets = ref(false);
+const manualForm = reactive({ cookie: '', xCsrfToken: '' });
 const scenarios = ref([]);
 const profiles = ref([]);
 const selectedProfileId = ref('');
@@ -180,8 +205,48 @@ async function loadCredentials() {
     const data = await request('/api/health-check/credentials');
     credential.configured = data.configured;
     credential.source = data.source || '';
+    credential.updatedAt = data.updatedAt || '';
   } catch (e) {
     ElMessage.error(e.message || '加载凭据状态失败');
+  }
+}
+
+async function wiseLogin() {
+  loggingIn.value = true;
+  try {
+    const data = await request('/api/health-check/wise-login', { method: 'POST' });
+    credential.configured = data.configured;
+    credential.source = data.source || '';
+    credential.updatedAt = data.updatedAt || '';
+    ElMessage.success(data.configured ? '登录成功，凭据已获取' : '登录完成，但凭据不完整');
+  } catch (e) {
+    ElMessage.error(e.message || '登录失败');
+  } finally {
+    loggingIn.value = false;
+  }
+}
+
+async function saveSecrets() {
+  if (!manualForm.cookie.trim() || !manualForm.xCsrfToken.trim()) {
+    ElMessage.warning('请填写 Cookie 和 x-csrf-token');
+    return;
+  }
+  savingSecrets.value = true;
+  try {
+    const data = await request('/api/health-check/secrets', {
+      method: 'POST',
+      body: JSON.stringify({ cookie: manualForm.cookie.trim(), xCsrfToken: manualForm.xCsrfToken.trim() })
+    });
+    credential.configured = data.configured;
+    credential.source = data.source || '';
+    credential.updatedAt = data.updatedAt || '';
+    manualForm.cookie = '';
+    manualForm.xCsrfToken = '';
+    ElMessage.success('凭据已保存');
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败');
+  } finally {
+    savingSecrets.value = false;
   }
 }
 
@@ -345,6 +410,10 @@ onMounted(() => {
 .credential-text {
   font-size: 14px;
   color: #303133;
+}
+.credential-collapse {
+  margin-top: 12px;
+  max-width: 720px;
 }
 .profile-form {
   margin-bottom: 8px;
