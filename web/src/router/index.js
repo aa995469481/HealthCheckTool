@@ -18,6 +18,12 @@ const routes = [
     meta: { title: '业务巡检' }
   },
   {
+    path: '/scene-manage',
+    name: 'SceneManage',
+    component: () => import('../views/SceneManageView.vue'),
+    meta: { title: '巡检场景管理' }
+  },
+  {
     path: '/traffic-card-inspection',
     name: 'TrafficCardInspection',
     component: () => import('../views/TrafficCardInspectionView.vue'),

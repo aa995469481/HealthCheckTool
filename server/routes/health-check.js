@@ -16,6 +16,8 @@ const secretsStore = require('../lib/secrets-store');
 const credentialManager = require('../lib/credential-manager');
 const clickhouse = require('../lib/clickhouse-client');
 const realInspection = require('../lib/real-inspection');
+const sceneParser = require('../lib/scene-parser');
+const sceneStore = require('../lib/scene-store');
 
 const router = express.Router();
 
@@ -78,11 +80,51 @@ router.post('/secrets', (req, res) => {
   res.json({ code: 0, msg: 'ok', data: status });
 });
 
-/* ---------- 2. 场景目录 ---------- */
+/* ---------- 2. 场景目录（自定义巡检场景，用户在巡检场景管理页维护） ---------- */
 router.get('/scenarios', (req, res) => {
-  const scenarios = mock.listScenarios();
-  logger.info(`[scenarios] list -> ${scenarios.length} scenarios`);
-  res.json({ code: 0, msg: 'ok', data: { scenarios } });
+  const scenes = sceneStore.listScenes();
+  logger.info(`[scenarios] list -> ${scenes.length} custom scenes`);
+  res.json({ code: 0, msg: 'ok', data: { scenarios: scenes } });
+});
+
+/* ---------- 2.1 巡检场景管理：解析 URL + 请求体 -> 场景草案 ---------- */
+router.post('/scenes/parse', (req, res) => {
+  const { url, requestBody } = req.body || {};
+  try {
+    if (!url || !String(url).trim()) return res.json({ code: 1, msg: '请填写请求 URL' });
+    if (!requestBody || !String(requestBody).trim()) return res.json({ code: 1, msg: '请填写请求体 JSON' });
+    const { scene, warnings } = sceneParser.parseAndValidate(String(url).trim(), String(requestBody).trim());
+    logger.info(`[scenes/parse] ok table=${scene.table} warnings=${warnings.length}`);
+    res.json({ code: 0, msg: 'ok', data: { scene, warnings } });
+  } catch (e) {
+    logger.error('[scenes/parse] failed', e);
+    res.json({ code: 1, msg: '解析失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 2.2 巡检场景管理：保存场景 ---------- */
+router.post('/scenes', (req, res) => {
+  const { scene } = req.body || {};
+  try {
+    if (!scene || !String(scene.title || '').trim()) {
+      return res.json({ code: 1, msg: '场景标题不能为空' });
+    }
+    if (!scene.table) {
+      return res.json({ code: 1, msg: '场景缺少表名 table' });
+    }
+    const saved = sceneStore.saveScene(scene);
+    res.json({ code: 0, msg: 'ok', data: saved });
+  } catch (e) {
+    logger.error('[scenes] save failed', e);
+    res.json({ code: 1, msg: '保存失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 2.3 巡检场景管理：删除场景 ---------- */
+router.delete('/scenes/:id', (req, res) => {
+  const ok = sceneStore.deleteScene(req.params.id);
+  if (!ok) return res.json({ code: 1, msg: '场景不存在' });
+  res.json({ code: 0, msg: 'ok' });
 });
 
 /* ---------- 3. 巡检计划：列表 ---------- */
@@ -123,47 +165,59 @@ router.post('/export-json', async (req, res) => {
   );
 
   try {
-    // 对每个启用的场景执行真实查询；同一 (table, cluster) 的场景复用同一次查询结果
+    // 读取自定义巡检场景，对每个启用的场景执行真实查询
+    const scenes = sceneStore.listScenes();
+    const sceneMap = new Map(scenes.map((s) => [s.id, s]));
     const queryResults = new Map();
-    const tableCache = new Map();
     const debugRequestBodies = [];
     for (const id of profile.enabled_scenarios) {
-      const def = mock.SCENARIO_DEFS.find((s) => s.id === id);
-      if (!def) continue;
-
-      const cacheKey = `${def.table}|${def.cluster}`;
-      if (!tableCache.has(cacheKey)) {
-        logger.info(`[export] query table=${def.table} cluster=${def.cluster}`);
-        // 构造并记录完整请求体
-        const requestBody = clickhouse.buildRequestBody({
-          name: def.table,
-          cluster: def.cluster,
-          beginTimestamp: profile.beginTimestamp,
-          endTimestamp: profile.endTimestamp,
-          pageNo: 1,
-          pageSize: clickhouse.PAGE_SIZE,
-          app_ver: profile.app_ver
-        });
-        debugRequestBodies.push(requestBody);
-
-        const q = await clickhouse.queryWithTotal({
-          name: def.table,
-          cluster: def.cluster,
-          beginTimestamp: profile.beginTimestamp,
-          endTimestamp: profile.endTimestamp,
-          app_ver: profile.app_ver
-        });
-        tableCache.set(cacheKey, q);
-        logger.info(`[export] table=${def.table} done total=${q.total} fetched=${q.records.length} pages=${q.pages}`);
+      const scene = sceneMap.get(id);
+      if (!scene) {
+        logger.warn(`[export] scenario not found: ${id}`);
+        continue;
       }
-      queryResults.set(id, tableCache.get(cacheKey));
+
+      logger.info(`[export] query scenario=${id} title=${scene.title} table=${scene.table} cluster=${scene.cluster}`);
+      // 构造并记录完整请求体
+      const requestBody = clickhouse.buildRequestBody({
+        name: scene.table,
+        cluster: scene.cluster,
+        beginTimestamp: profile.beginTimestamp,
+        endTimestamp: profile.endTimestamp,
+        pageNo: 1,
+        pageSize: clickhouse.PAGE_SIZE,
+        app_ver: profile.app_ver,
+        filterCondition: scene.filterCondition,
+        queryString: scene.queryString,
+        granularity: scene.granularity,
+        dataSourceServiceId: scene.dataSourceServiceId,
+        orderFieldName: scene.orderFieldName,
+        orderType: scene.orderType
+      });
+      debugRequestBodies.push(requestBody);
+
+      const q = await clickhouse.queryWithTotal({
+        name: scene.table,
+        cluster: scene.cluster,
+        beginTimestamp: profile.beginTimestamp,
+        endTimestamp: profile.endTimestamp,
+        app_ver: profile.app_ver,
+        filterCondition: scene.filterCondition,
+        queryString: scene.queryString,
+        granularity: scene.granularity,
+        dataSourceServiceId: scene.dataSourceServiceId,
+        orderFieldName: scene.orderFieldName,
+        orderType: scene.orderType
+      });
+      queryResults.set(id, q);
+      logger.info(`[export] scenario=${id} done total=${q.total} fetched=${q.records.length} pages=${q.pages}`);
     }
 
     if (queryResults.size === 0) {
       return res.json({ code: 1, msg: '未找到可执行的场景' });
     }
 
-    const data = realInspection.buildInspectionResult(profile, queryResults);
+    const data = realInspection.buildInspectionResult(profile, queryResults, scenes);
     const cacheId = putCache(data);
     const failedCount = (data.scenarios || []).filter((s) => s.status === 'failed').length;
     logger.info(`[export] done scenarios=${data.scenarios.length} failedScenarios=${failedCount} cacheId=${cacheId}`);

@@ -299,7 +299,8 @@ async function loadScenarios() {
   try {
     const data = await request('/api/health-check/scenarios');
     scenarios.value = data.scenarios;
-    plan.enabled_scenarios = scenarios.value.filter((s) => s.enabled).map((s) => s.id);
+    // 自定义场景无 enabled 字段，默认全选所有已保存场景
+    plan.enabled_scenarios = scenarios.value.map((s) => s.id);
   } catch (e) {
     ElMessage.error(e.message || '加载场景失败');
   }

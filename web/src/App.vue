@@ -21,6 +21,10 @@
           <el-icon><DataAnalysis /></el-icon>
           <span>业务巡检</span>
         </el-menu-item>
+        <el-menu-item index="/scene-manage">
+          <el-icon><Files /></el-icon>
+          <span>巡检场景管理</span>
+        </el-menu-item>
         <el-menu-item index="/traffic-card-inspection">
           <el-icon><Van /></el-icon>
           <span>交通卡业务巡检</span>

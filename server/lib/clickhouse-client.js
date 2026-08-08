@@ -148,10 +148,31 @@ function buildRequestHeaders(cookie, csrfToken) {
 
 /**
  * 构建一次查询的完整请求体（内部统一将时间转为毫秒时间戳）
- * @param {object} opts { name, cluster, beginTimestamp, endTimestamp, pageNo, pageSize, app_ver }
+ * @param {object} opts { name, cluster, beginTimestamp, endTimestamp, pageNo, pageSize, app_ver, filterCondition, queryString, granularity, dataSourceServiceId, orderFieldName, orderType }
+ *        filterCondition 传入时优先使用（自定义巡检场景），否则用默认 PILOT_FILTER_CONDITION
  */
 function buildRequestBody(opts = {}) {
-  const filterCondition = JSON.parse(JSON.stringify(PILOT_FILTER_CONDITION));
+  let filterCondition;
+  if (opts.filterCondition && typeof opts.filterCondition === 'object') {
+    // 深拷贝并补全字段，queryString 单独保留
+    filterCondition = {
+      mustFilters: [], mustNotFilters: [], greaterThanFilters: [], lessThanFilters: [],
+      greaterFilters: [], lessFilters: [], shouldFilters: [],
+      inFilters: [], notInFilters: [], equalFilters: [], notEqualFilters: [],
+      likeFilters: [], notLikeFilters: [], existFilters: [], notExistFilters: [],
+      queryString: '*',
+      ...JSON.parse(JSON.stringify(opts.filterCondition))
+    };
+    // 场景 filterCondition 可能不含 queryString（解析时单独提取），此处兜底
+    if (opts.queryString !== undefined && filterCondition.queryString === '*') {
+      // 场景显式指定 queryString 时使用
+      if (opts.queryString !== '' && !Object.prototype.hasOwnProperty.call(opts.filterCondition, 'queryString')) {
+        filterCondition.queryString = opts.queryString;
+      }
+    }
+  } else {
+    filterCondition = JSON.parse(JSON.stringify(PILOT_FILTER_CONDITION));
+  }
   // 文档 2.2：app_ver 注入 inFilters（未填则不加）
   if (opts.app_ver) {
     filterCondition.inFilters.push({ _app_ver: { propertyList: [opts.app_ver], disabled: false } });
@@ -166,10 +187,10 @@ function buildRequestBody(opts = {}) {
     pageSize: opts.pageSize || PAGE_SIZE,
     filterCondition,
     limit: 0,
-    granularity: 0,
-    dataSourceServiceId: 'com.huawei.wisecloudvirtualcardmgmtservice',
-    orderFieldName: '',
-    orderType: ''
+    granularity: opts.granularity !== undefined ? opts.granularity : 0,
+    dataSourceServiceId: opts.dataSourceServiceId || 'com.huawei.wisecloudvirtualcardmgmtservice',
+    orderFieldName: opts.orderFieldName || '',
+    orderType: opts.orderType || ''
   };
 }
 
@@ -221,7 +242,7 @@ async function queryOnce(requestBody) {
 
 /**
  * 执行完整巡检查询（自动分页拉取所有记录）
- * @param {object} params { name, cluster, beginTimestamp, endTimestamp, app_ver }
+ * @param {object} params { name, cluster, beginTimestamp, endTimestamp, app_ver, filterCondition, queryString, granularity, dataSourceServiceId, orderFieldName, orderType }
  * @returns {Promise<{ total:number, records:Array, histogram:Array, pages:number }>}
  */
 async function queryWithTotal(params = {}) {
@@ -242,7 +263,13 @@ async function queryWithTotal(params = {}) {
       endTimestamp,
       pageNo,
       pageSize: PAGE_SIZE,
-      app_ver: params.app_ver
+      app_ver: params.app_ver,
+      filterCondition: params.filterCondition,
+      queryString: params.queryString,
+      granularity: params.granularity,
+      dataSourceServiceId: params.dataSourceServiceId,
+      orderFieldName: params.orderFieldName,
+      orderType: params.orderType
     });
 
     const page = await queryOnce(requestBody);
