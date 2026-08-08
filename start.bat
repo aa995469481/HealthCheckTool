@@ -43,8 +43,8 @@ if %NODE_MAJOR% LSS 18 (
 )
 echo.
 
-rem ---------- 2. Install dependencies, skip if already installed ----------
-if exist "server\node_modules" goto :web_deps
+rem ---------- 2. Install dependencies if not complete ----------
+if exist "server\node_modules\express" goto :web_deps
 echo [2/4] Installing server dependencies...
 call :npm_install server
 if errorlevel 1 (
@@ -54,7 +54,7 @@ if errorlevel 1 (
 )
 
 :web_deps
-if exist "web\node_modules" goto :start_servers
+if exist "web\node_modules\vue-router" goto :start_servers
 echo [2/4] Installing web dependencies...
 call :npm_install web
 if errorlevel 1 (
