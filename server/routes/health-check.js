@@ -9,6 +9,8 @@
  */
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { logger } = require('../lib/logger');
 const mock = require('../lib/mock-inspection');
 const profileStore = require('../lib/profile-store');
@@ -20,6 +22,7 @@ const sceneParser = require('../lib/scene-parser');
 const sceneStore = require('../lib/scene-store');
 const debugMode = require('../lib/debug-mode');
 const excelExport = require('../lib/excel-export');
+const clusterSummary = require('../lib/cluster-summary');
 
 const router = express.Router();
 
@@ -222,6 +225,29 @@ router.post('/export-json', async (req, res) => {
       if (!scene || !q) continue;
       excelScenarios.push({ scene, records: q.records });
     }
+
+    // 生成聚类摘要（供大模型分析），持久化到 server/data/analysis/
+    const analysisDir = path.join(__dirname, '..', 'data', 'analysis');
+    if (!fs.existsSync(analysisDir)) fs.mkdirSync(analysisDir, { recursive: true });
+    const summaries = excelScenarios.map(({ scene, records }) => clusterSummary.buildClusterSummary(scene, records));
+    const markdownTexts = summaries.map((s) => clusterSummary.toMarkdown(s));
+    const analysisFile = path.join(analysisDir, `cluster-${Date.now()}.json`);
+    fs.writeFileSync(
+      analysisFile,
+      JSON.stringify(
+        {
+          createdAt: new Date().toISOString(),
+          plan: profile.name || 'unnamed',
+          appVer: profile.app_ver || '',
+          summaries,
+          markdownTexts
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+    logger.info(`[export] cluster summary saved -> ${analysisFile} scenes=${summaries.length}`);
 
     const buffer = await excelExport.buildExcelBuffer(excelScenarios);
 
