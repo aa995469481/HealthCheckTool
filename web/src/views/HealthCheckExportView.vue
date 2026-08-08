@@ -169,15 +169,6 @@
           <el-table-column prop="percent" label="占比" width="80">
             <template #default="{ row }">{{ row.percent }}%</template>
           </el-table-column>
-          <el-table-column label="时间分布" min-width="220">
-            <template #default="{ row }">
-              <span class="cell-line" v-if="row.timeRange">{{ row.timeRange }}</span>
-              <el-tag v-for="t in row.timeDist.slice(0, 4)" :key="t.time" size="small" class="cell-tag">
-                {{ t.time.split(' ')[1] }} {{ t.count }}条
-              </el-tag>
-              <span v-if="row.timeDist.length > 4" class="cell-more">…等{{ row.timeDist.length }}个时段</span>
-            </template>
-          </el-table-column>
           <el-table-column label="版本分布" min-width="180">
             <template #default="{ row }">
               <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
@@ -186,12 +177,13 @@
               <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
             </template>
           </el-table-column>
-          <el-table-column label="外码（按次数降序）" min-width="200">
+          <el-table-column label="外码分布（按次数降序，含占比）" min-width="260">
             <template #default="{ row }">
-              <span v-for="e in row.extCodes.slice(0, 3)" :key="e.code" class="cell-line">
-                {{ e.code }} × {{ e.count }}
-              </span>
-              <span v-if="row.extCodes.length > 3" class="cell-more">…等{{ row.extCodes.length }}个外码</span>
+              <div v-for="e in row.extCodes" :key="e.code" class="ext-line">
+                <el-tag size="small" class="ext-tag">{{ e.code }}</el-tag>
+                <span class="ext-count">{{ e.count }} 条</span>
+                <span class="ext-percent">({{ e.percent }}%)</span>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="代表样本" min-width="240">
@@ -696,6 +688,23 @@ onMounted(() => {
   margin-bottom: 4px;
 }
 .cell-more {
+  font-size: 12px;
+  color: #909399;
+}
+.ext-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.9;
+}
+.ext-tag {
+  flex-shrink: 0;
+}
+.ext-count {
+  font-size: 13px;
+  color: #606266;
+}
+.ext-percent {
   font-size: 12px;
   color: #909399;
 }

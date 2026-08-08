@@ -97,31 +97,15 @@ function buildClusterSummary(scene, records) {
     const count = list.length;
     const percent = total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0;
 
-    // 外码分布（降序）
+    // 外码分布（降序），含占比
     const extMap = new Map();
     for (const r of list) {
       const ext = fieldValue(r, extCodeField) || '';
       extMap.set(ext, (extMap.get(ext) || 0) + 1);
     }
     const extCodes = [...extMap.entries()]
-      .map(([code, c]) => ({ code, count: c }))
+      .map(([code, c]) => ({ code, count: c, percent: Number(((c / count) * 100).toFixed(1)) }))
       .sort((a, b) => b.count - a.count);
-
-    // 时间分布（按小时）
-    const hourMap = new Map();
-    let minDay = '';
-    let maxDay = '';
-    for (const r of list) {
-      const h = parseHour(fieldValue(r, timeField));
-      if (!h) continue;
-      const key = `${h.day} ${h.hour}时`;
-      hourMap.set(key, (hourMap.get(key) || 0) + 1);
-      if (!minDay || h.day < minDay) minDay = h.day;
-      if (!maxDay || h.day > maxDay) maxDay = h.day;
-    }
-    const timeDist = [...hourMap.entries()]
-      .map(([t, c]) => ({ time: t, count: c }))
-      .sort((a, b) => (a.time < b.time ? -1 : 1));
 
     // 版本分布
     const verMap = new Map();
@@ -138,8 +122,6 @@ function buildClusterSummary(scene, records) {
       inCodeRaw: inCode,
       count,
       percent,
-      timeRange: minDay && maxDay ? (minDay === maxDay ? minDay : `${minDay} ~ ${maxDay}`) : '',
-      timeDist,
       versionDist,
       extCodes,
       records: list
@@ -182,13 +164,11 @@ function buildClusterSummary(scene, records) {
     scenarioTitle: scene && scene.title ? scene.title : '',
     fields: { inCodeField, extCodeField, versionField, timeField },
     total,
-    groups: mainGroups.map(({ inCode, inCodeRaw, count, percent, timeRange, timeDist, versionDist, extCodes, samples }) => ({
+    groups: mainGroups.map(({ inCode, inCodeRaw, count, percent, versionDist, extCodes, samples }) => ({
       inCode,
       inCodeRaw,
       count,
       percent,
-      timeRange,
-      timeDist,
       versionDist,
       extCodes,
       samples
@@ -213,15 +193,12 @@ function toMarkdown(summary) {
 
   for (const g of summary.groups) {
     lines.push(`### 内码 ${g.inCode}`);
-    lines.push(`条数：${g.count}（占比 ${g.percent}%）${g.timeRange ? `，时间范围：${g.timeRange}` : ''}`);
-    if (g.timeDist && g.timeDist.length) {
-      lines.push(`时间分布：${g.timeDist.map((t) => `${t.time} ${t.count}条`).join('、')}`);
-    }
+    lines.push(`条数：${g.count}（占比 ${g.percent}%）`);
     if (g.versionDist && g.versionDist.length) {
       lines.push(`版本分布：${g.versionDist.map((v) => `${v.version} ${v.count}条`).join('、')}`);
     }
     if (g.extCodes && g.extCodes.length) {
-      lines.push(`外码分布（按次数降序）：${g.extCodes.map((e) => `${e.code} ${e.count}条`).join('、')}`);
+      lines.push(`外码分布（按次数降序，含占比）：${g.extCodes.map((e) => `${e.code} ${e.count}条(${e.percent}%)`).join('、')}`);
     }
     for (let i = 0; i < g.samples.length; i++) {
       lines.push(`样本${i + 1}：${JSON.stringify(g.samples[i])}`);
