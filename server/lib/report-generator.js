@@ -1,15 +1,18 @@
 /**
- * 巡检日报生成器 - 分场景多次调用大模型，汇总生成三段式标准日报（HTML）
+ * 巡检日报生成器 - 分场景、分批调用大模型，汇总生成三段式标准日报（HTML）
  *
- * 流程（与用户确认）：
- *   1. 读取上次巡检的聚类摘要（server/data/analysis/latest.json，含每场景 markdownTexts）
- *   2. 每个场景调用一次大模型 -> 输出该场景的「问题分析」
- *   3. 汇总（计划信息 + 各场景分析）再调用一次 -> 输出三段式完整日报 Markdown
+ * 流程（与用户确认，2026-08-08 增加分批）：
+ *   1. 读取上次巡检的聚类摘要（server/data/analysis/latest.json）
+ *   2. 每个场景：基于结构化 summaries 构建精简输入（不再直接使用原始 markdownTexts，避免单次输入过长导致超时）
+ *      - 样本配额：每分组(错误码)最多 2 条、每场景最多 5 条、字段值截断 200 字符
+ *      - 输入仍超长时按「维度块」分批，每批 <= maxCharsPerPrompt，逐批调用 -> 拼接为该场景分析
+ *   3. 汇总（计划信息 + 各场景分析）调用一次 -> 三段式完整日报 Markdown
  *   4. 转 HTML 完整页面（展示 + 下载）
  *
  * 输入长度控制（对齐用户提供的约束）：
  *   - 每次调用输入最大字符数：ai-config.maxCharsPerPrompt（默认 12000）
- *   - 每场景摘要超长时自动裁剪（保留开头主体 + 标注截断）
+ *   - 样本上限：每场景 5 条（MAX_SAMPLES_PER_SCENE）、每错误码 2 条（MAX_SAMPLES_PER_GROUP）
+ *   - 超长裁剪：样本字段值截断 + 批次内单块 clipText
  *   - 模型输出 finish_reason=length 时由 llm-service 明确报错
  *
  * mock 模式：不真实调用大模型，返回预置示例文本（用于本地自测/无网络环境演示）
@@ -21,6 +24,32 @@ const llm = require('./llm-service');
 const aiConfig = require('./ai-config-store');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
+
+/* ---------- 样本裁剪约束（对齐用户提供的参考实现） ---------- */
+
+const MAX_SAMPLES_PER_SCENE = 5; // 每场景最多保留样本条数
+const MAX_SAMPLES_PER_GROUP = 2; // 每分组（错误码）最多保留样本条数
+const MAX_SAMPLE_FIELD_LEN = 200; // 单个样本字段值最大长度
+// 样本只保留这些业务关键字段，控制输入体积
+const SAMPLE_FIELDS = [
+  'walletEventInCode', 'walletEventExtCode', 'walletEventID', 'walletEventDesc',
+  'issueName', 'issueDesc', 'errorCode', 'errorMsg', 'message',
+  '_app_ver', 'appVersion', 'happenedTime', 'userProvince', 'userCity'
+];
+
+/** 裁剪单条样本：只保留关键字段 + 值截断 */
+function trimSample(sample) {
+  const out = {};
+  for (const f of SAMPLE_FIELDS) {
+    const v = sample && sample[f];
+    if (v !== undefined && v !== null && String(v) !== '') {
+      let s = String(v);
+      if (s.length > MAX_SAMPLE_FIELD_LEN) s = s.slice(0, MAX_SAMPLE_FIELD_LEN) + '…';
+      out[f] = s;
+    }
+  }
+  return JSON.stringify(out);
+}
 
 /* ---------- 系统提示词 ---------- */
 
@@ -50,6 +79,125 @@ function formatTimeRange(begin, end) {
   return `${b} ~ ${e}`;
 }
 
+/* ---------- 分批：基于结构化摘要构建精简输入 + 打包批次 ---------- */
+
+/**
+ * 基于结构化聚类摘要构建「维度文本块」数组
+ * 相比原始 markdownTexts（可达 20 万字符）精简得多：
+ *   - 样本配额：每分组最多 MAX_SAMPLES_PER_GROUP 条、每场景最多 MAX_SAMPLES_PER_SCENE 条（跨维度轮询均分）
+ *   - 样本字段裁剪：trimSample
+ *   - 版本分布只取前 3、二级细分只列统计不列样本
+ */
+function buildSceneBlocks(summary) {
+  const dims = summary.dimensions || [];
+  // 第一步：按配额分配样本（跨维度轮询，保证每个维度都有代表样本）
+  //   轮次 0：每个维度的 Top 分组先各取 1 条；轮次 1：再各取第 2 条，直到场景配额用尽
+  const samplesPlan = new Map(); // `${di}|${groupKey}` -> 样本数组
+  const entriesPerDim = dims.map((dim, di) =>
+    (dim.groups || [])
+      .map((g, gi) => ({ g, gi, samples: (g.samples || []).slice(0, MAX_SAMPLES_PER_GROUP) }))
+      .filter((e) => e.samples.length)
+  );
+  let remaining = MAX_SAMPLES_PER_SCENE;
+  for (let round = 0; round < MAX_SAMPLES_PER_GROUP && remaining > 0; round++) {
+    for (let di = 0; di < entriesPerDim.length && remaining > 0; di++) {
+      for (const e of entriesPerDim[di]) {
+        if (e.taken === undefined) e.taken = 0;
+        if (e.taken > round) continue;
+        if (e.taken >= e.samples.length || remaining <= 0) break;
+        const planKey = `${di}|${e.g.key}`;
+        if (!samplesPlan.has(planKey)) samplesPlan.set(planKey, []);
+        samplesPlan.get(planKey).push(e.samples[e.taken]);
+        e.taken++;
+        remaining--;
+      }
+    }
+  }
+  // 第二步：构建文本块
+  const blocks = [];
+  for (let di = 0; di < dims.length; di++) {
+    const dim = dims[di];
+    const lines = [];
+    lines.push(`- 聚类维度 ${di + 1}：${dim.field}` + (dim.subField ? `（二级下钻字段：${dim.subField}）` : ''));
+    for (const g of dim.groups || []) {
+      lines.push(`- ${dim.field}=${g.key}：${g.count}条（占比${g.percent}%）`);
+      const vd = (g.versionDist || []).slice(0, 3);
+      if (vd.length) {
+        const more = (g.versionDist || []).length > 3 ? ' 等' : '';
+        lines.push(`  版本分布：${vd.map((v) => `${v.version} ${v.count}条`).join('、')}${more}`);
+      }
+      if (g.children && g.children.length) {
+        lines.push(`  二级细分：${g.children.map((c) => `${c.key} ${c.count}条(${c.percent}%)`).join('、')}`);
+        if (g.subOthersCount) lines.push(`  其余二级 ${g.subOthersCount} 条超 Top7 未列出`);
+      }
+      const planKey = `${di}|${g.key}`;
+      const samples = samplesPlan.get(planKey) || [];
+      if (samples.length) {
+        lines.push('  代表样本：');
+        samples.forEach((s, idx) => lines.push(`    - 样本${idx + 1}：${trimSample(s)}`));
+      }
+    }
+    if (dim.others) lines.push(`- 其他：${dim.others.groups} 个分组共 ${dim.others.count} 条（占比小/超 Top7 未细分）`);
+    blocks.push({ title: `维度 ${di + 1}：${dim.field}`, text: lines.join('\n') });
+  }
+  return blocks;
+}
+
+/**
+ * 将维度文本块贪心打包成批次，每批总字符 <= maxChars（单块超限时内部裁剪）
+ */
+function packBlocks(blocks, maxChars) {
+  const batches = [];
+  let cur = [];
+  let curLen = 0;
+  for (const b of blocks) {
+    let text = b.text;
+    if (text.length > maxChars) text = clipText(text, maxChars);
+    if (curLen + text.length > maxChars && cur.length) {
+      batches.push(cur);
+      cur = [];
+      curLen = 0;
+    }
+    cur.push({ title: b.title, text });
+    curLen += text.length;
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
+/**
+ * 生成单个场景的问题分析（输入超长时按批次多次调用，逐批分析后拼接）
+ * @returns {Promise<{ content, batches, inputChars }>}
+ */
+async function analyzeScene(summary, title, maxChars, mock) {
+  const blocks = buildSceneBlocks(summary);
+  const batches = packBlocks(blocks, maxChars);
+  const parts = [];
+  let totalInputChars = 0;
+  for (let b = 0; b < batches.length; b++) {
+    const batchText = batches[b].map((blk) => `### ${blk.title}\n${blk.text}`).join('\n\n');
+    totalInputChars += batchText.length;
+    let content;
+    if (mock) {
+      content = mockSceneReport(title, batchText);
+    } else {
+      const user =
+        `以下是场景「${title}」的巡检聚类摘要${batches.length > 1 ? `（第 ${b + 1}/${batches.length} 批）` : ''}` +
+        `（Top7 分组、占比、版本分布、代表样本）：\n\n${batchText}\n\n` +
+        `请输出该场景的问题分析（主要问题点、可能原因、风险影响评估）。` +
+        (batches.length > 1 ? '注意：仅分析本批次给出的内容，各批次结果会合并进同一场景，不要遗漏本批次的主要问题点。' : '');
+      const r = await llm.callChat({ system: SCENE_SYSTEM, user });
+      content = r.content;
+    }
+    parts.push(content);
+    logger.info(`[ai-report] scene=${title} batch ${b + 1}/${batches.length} inputChars=${batchText.length} outputChars=${content.length}`);
+  }
+  const content = batches.length > 1
+    ? parts.map((c, idx) => `#### 批次 ${idx + 1}/${batches.length}\n${c}`).join('\n\n')
+    : parts[0];
+  return { content, batches: batches.length, inputChars: totalInputChars };
+}
+
 /* ---------- mock 模式：本地自测 / 无网络演示 ---------- */
 
 function mockSceneReport(title, markdown) {
@@ -70,32 +218,22 @@ async function generateDailyReport({ mock = false } = {}) {
     throw new Error('暂无巡检数据，请先执行巡检（生成聚类摘要）后再生成日报');
   }
   const analysis = JSON.parse(fs.readFileSync(ANALYSIS_FILE, 'utf-8'));
-  const markdownTexts = Array.isArray(analysis.markdownTexts) ? analysis.markdownTexts : [];
   const summaries = Array.isArray(analysis.summaries) ? analysis.summaries : [];
-  if (markdownTexts.length === 0) {
+  if (summaries.length === 0) {
     throw new Error('巡检数据中没有场景摘要，请先执行巡检');
   }
   const cfg = aiConfig.getConfig();
   const maxChars = cfg.maxCharsPerPrompt && cfg.maxCharsPerPrompt > 0 ? cfg.maxCharsPerPrompt : 12000;
 
-  logger.info(`[ai-report] start scenes=${markdownTexts.length} mock=${mock} maxChars=${maxChars}`);
+  logger.info(`[ai-report] start scenes=${summaries.length} mock=${mock} maxChars=${maxChars}`);
 
-  // 第一步：每个场景单独调用，生成该场景的问题分析
+  // 第一步：每个场景分批调用，生成该场景的问题分析
   const sceneReports = [];
-  for (let i = 0; i < markdownTexts.length; i++) {
-    const title = (summaries[i] && summaries[i].scenarioTitle) || `场景${i + 1}`;
-    const clipped = clipText(markdownTexts[i], maxChars);
-    logger.info(`[ai-report] scene ${i + 1}/${markdownTexts.length} title=${title} inputChars=${clipped.length} (raw=${markdownTexts[i].length})`);
-    let content;
-    if (mock) {
-      content = mockSceneReport(title, markdownTexts[i]);
-    } else {
-      const user = `以下是场景「${title}」的巡检聚类摘要（Top7 分组、占比、版本分布、代表样本）：\n\n${clipped}\n\n请输出该场景的问题分析（主要问题点、可能原因、风险影响评估）。`;
-      const r = await llm.callChat({ system: SCENE_SYSTEM, user });
-      content = r.content;
-    }
-    sceneReports.push({ title, content, inputChars: clipped.length });
-    logger.info(`[ai-report] scene ${i + 1} done outputChars=${content.length}`);
+  for (let i = 0; i < summaries.length; i++) {
+    const title = summaries[i].scenarioTitle || `场景${i + 1}`;
+    const sr = await analyzeScene(summaries[i], title, maxChars, mock);
+    sceneReports.push({ title, content: sr.content, batches: sr.batches, inputChars: sr.inputChars });
+    logger.info(`[ai-report] scene ${i + 1}/${summaries.length} title=${title} batches=${sr.batches} inputChars=${sr.inputChars} outputChars=${sr.content.length}`);
   }
 
   // 第二步：汇总调用，生成三段式完整日报
@@ -103,18 +241,20 @@ async function generateDailyReport({ mock = false } = {}) {
     `- 巡检计划：${analysis.plan || '未命名计划'}`,
     `- 目标版本：${analysis.appVer || '未指定'}`,
     `- 巡检时间：${formatTimeRange(analysis.beginTimestamp, analysis.endTimestamp)}`,
-    `- 巡检场景数：${markdownTexts.length}`,
+    `- 巡检场景数：${summaries.length}`,
     `- 各场景命中条数：${summaries.map((s, i) => `「${s.scenarioTitle || `场景${i + 1}`}」${s.total}条`).join('；')}`
   ].join('\n');
 
+  // 汇总输入控制：每场景分析限长，保证总输入不超过 maxChars（避免汇总调用超时）
+  const perSceneBudget = Math.max(800, Math.floor((maxChars * 0.8) / sceneReports.length));
   const sceneSections = sceneReports.map((sr, i) => {
-    const clipped = clipText(sr.content, maxChars);
+    const clipped = clipText(sr.content, perSceneBudget);
     return `### 场景 ${i + 1}：${sr.title}\n${clipped}`;
   }).join('\n\n');
 
   const reportUser = `本次巡检概况：\n${overviewLines}\n\n以下是各场景的问题分析结果：\n\n${sceneSections}\n\n请据此生成完整的三段式巡检日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。`;
 
-  logger.info(`[ai-report] final call inputChars=${reportUser.length}`);
+  logger.info(`[ai-report] final call inputChars=${reportUser.length} perSceneBudget=${perSceneBudget}`);
   let markdown;
   if (mock) {
     const mockSections = sceneReports.map((sr, i) => `### 场景 ${i + 1}：${sr.title}\n\n${sr.content}`).join('\n\n');
@@ -150,7 +290,8 @@ async function generateDailyReport({ mock = false } = {}) {
     appVer: analysis.appVer || '',
     beginTimestamp: analysis.beginTimestamp || '',
     endTimestamp: analysis.endTimestamp || '',
-    scenes: sceneReports.map((sr) => ({ title: sr.title, outputChars: sr.content.length })),
+    scenes: sceneReports.map((sr) => ({ title: sr.title, batches: sr.batches, inputChars: sr.inputChars, outputChars: sr.content.length })),
+    totalCalls: sceneReports.reduce((s, x) => s + x.batches, 0) + 1,
     mock
   };
   logger.info(`[ai-report] done scenes=${sceneReports.length} markdownChars=${markdown.length} htmlChars=${html.length}`);
@@ -303,4 +444,4 @@ ${body}
 </html>`;
 }
 
-module.exports = { generateDailyReport, markdownToHtml, clipText };
+module.exports = { generateDailyReport, markdownToHtml, clipText, buildSceneBlocks, packBlocks, trimSample };
