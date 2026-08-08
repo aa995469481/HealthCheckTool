@@ -191,6 +191,6 @@ const server = app.listen(PORT, () => {
   console.log('============================================');
 });
 
-// wise-login 需等待用户手动登录（可达数分钟），放宽请求超时
-server.requestTimeout = 6 * 60 * 1000;
-server.headersTimeout = 6 * 60 * 1000;
+// 手动登录（可达数分钟）与 ClickHouse 真实查询（大范围数据较慢）均需较长超时
+server.requestTimeout = 10 * 60 * 1000;
+server.headersTimeout = 10 * 60 * 1000;

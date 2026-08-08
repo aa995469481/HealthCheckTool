@@ -63,6 +63,7 @@ function toTimestampMs(dateStr, isEnd) {
 function httpJsonPost(urlStr, headers, bodyObj, timeoutMs) {
   return new Promise((resolve, reject) => {
     let req;
+    let receivedBytes = 0;
     try {
       const url = new URL(urlStr);
       const payload = JSON.stringify(bodyObj);
@@ -79,6 +80,7 @@ function httpJsonPost(urlStr, headers, bodyObj, timeoutMs) {
           res.setEncoding('utf-8');
           res.on('data', (c) => {
             body += c;
+            receivedBytes = Buffer.byteLength(body);
             if (body.length > 20 * 1024 * 1024) {
               req.destroy();
               reject(new Error('响应体超过 20MB'));
@@ -90,7 +92,10 @@ function httpJsonPost(urlStr, headers, bodyObj, timeoutMs) {
     } catch (e) {
       return reject(e);
     }
-    req.on('timeout', () => req.destroy(new Error('request timeout')));
+    req.on('timeout', () => {
+      // 记录已接收字节数，便于判断服务器是否在响应中
+      req.destroy(new Error(`request timeout after ${timeoutMs}ms, receivedBytes=${receivedBytes}`));
+    });
     req.on('error', (e) => reject(e));
     req.end();
   });
