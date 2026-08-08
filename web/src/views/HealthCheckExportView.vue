@@ -6,6 +6,10 @@
         <div class="card-header">
           <span>凭据设置</span>
           <div class="card-actions">
+            <div class="debug-toggle">
+              <span class="debug-toggle-label">详细日志模式</span>
+              <el-switch v-model="debugModeEnabled" size="small" @change="toggleDebugMode" />
+            </div>
             <el-button size="small" type="primary" :icon="Connection" :loading="loggingIn" @click="wiseLogin">
               Wise 登录
             </el-button>
@@ -195,6 +199,7 @@ import { ElMessage } from 'element-plus';
 import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay } from '@element-plus/icons-vue';
 
 const credential = reactive({ configured: false, expired: false, expiredAt: '', source: '', updatedAt: '' });
+const debugModeEnabled = ref(false);
 const loggingIn = ref(false);
 const savingSecrets = ref(false);
 const manualForm = reactive({ cookie: '', xCsrfToken: '' });
@@ -243,6 +248,28 @@ async function loadCredentials() {
     credential.updatedAt = data.updatedAt || '';
   } catch (e) {
     ElMessage.error(e.message || '加载凭据状态失败');
+  }
+}
+
+async function loadDebugMode() {
+  try {
+    const data = await request('/api/health-check/debug-mode');
+    debugModeEnabled.value = !!data.enabled;
+  } catch (e) {
+    debugModeEnabled.value = false;
+  }
+}
+
+async function toggleDebugMode(enabled) {
+  try {
+    await request('/api/health-check/debug-mode', {
+      method: 'POST',
+      body: JSON.stringify({ enabled })
+    });
+    ElMessage.success(enabled ? '已开启详细日志模式' : '已关闭详细日志模式');
+  } catch (e) {
+    debugModeEnabled.value = !enabled;
+    ElMessage.error(e.message || '切换失败');
   }
 }
 
@@ -482,6 +509,7 @@ onMounted(() => {
   loadCredentials();
   loadScenarios();
   loadProfiles();
+  loadDebugMode();
 });
 </script>
 
@@ -497,7 +525,18 @@ onMounted(() => {
 }
 .card-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+.debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+.debug-toggle-label {
+  font-size: 13px;
+  color: #606266;
 }
 .credential-row {
   display: flex;

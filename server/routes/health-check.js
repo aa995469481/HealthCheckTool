@@ -18,6 +18,7 @@ const clickhouse = require('../lib/clickhouse-client');
 const realInspection = require('../lib/real-inspection');
 const sceneParser = require('../lib/scene-parser');
 const sceneStore = require('../lib/scene-store');
+const debugMode = require('../lib/debug-mode');
 
 const router = express.Router();
 
@@ -48,6 +49,20 @@ function getCache(id) {
   }
   return item.data;
 }
+
+/* ---------- 0.5 详细日志模式开关 ---------- */
+router.get('/debug-mode', (req, res) => {
+  const status = debugMode.getStatus();
+  logger.info(`[debug-mode] get -> enabled=${status.enabled}`);
+  res.json({ code: 0, msg: 'ok', data: status });
+});
+
+router.post('/debug-mode', (req, res) => {
+  const { enabled } = req.body || {};
+  const data = debugMode.setDebugEnabled(enabled === true);
+  logger.info(`[debug-mode] set -> enabled=${data.enabled}`);
+  res.json({ code: 0, msg: 'ok', data });
+});
 
 /* ---------- 1. 凭据状态 ---------- */
 router.get('/credentials', (req, res) => {

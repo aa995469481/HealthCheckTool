@@ -17,6 +17,7 @@ const path = require('path');
 const config = require('../config');
 const { logger } = require('./logger');
 const secretsStore = require('./secrets-store');
+const debugMode = require('./debug-mode');
 
 /** Wise DevOps 日志查询接口地址 */
 const QUERY_URL =
@@ -79,8 +80,12 @@ function curlJsonPost(urlStr, headers, bodyObj, timeoutMs) {
     }
     args.push('--data-raw', payload, '-o', bodyFile, '-w', '%{http_code}', urlStr);
 
-    // 完整命令日志（cookie 值较长，便于定位请求差异）
-    logger.info(`[clickhouse] CURL CMD:\ncurl ${args.map((a) => `"${a}"`).join(' ')}`);
+    // 完整命令日志（cookie 值较长，仅详细模式输出，便于定位请求差异）
+    if (debugMode.getDebugEnabled()) {
+      logger.info(`[clickhouse] CURL CMD:\ncurl ${args.map((a) => `"${a}"`).join(' ')}`);
+    } else {
+      logger.debug(`[clickhouse] POST ${urlStr} headers=${Object.keys(headers).length} bodyLen=${payload.length}`);
+    }
 
     execFile(
       'curl',
@@ -205,15 +210,25 @@ async function queryOnce(requestBody) {
   }
 
   const headers = buildRequestHeaders(cred.cookie, cred.xCsrfToken);
-  logger.info(`[clickhouse] === REQUEST BODY (page=${requestBody.pageNo}) ===\n${JSON.stringify(requestBody, null, 2)}`);
+  if (debugMode.getDebugEnabled()) {
+    logger.info(`[clickhouse] === REQUEST BODY (page=${requestBody.pageNo}) ===\n${JSON.stringify(requestBody, null, 2)}`);
+  } else {
+    logger.info(
+      `[clickhouse] query page=${requestBody.pageNo} table=${requestBody.name} cluster=${requestBody.cluster} range=${requestBody.beginTimestamp}~${requestBody.endTimestamp}`
+    );
+  }
 
   const res = await curlJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
 
-  logger.info(`[clickhouse] === RESPONSE status=${res.status} (page=${requestBody.pageNo}) ===`);
-  try {
-    logger.info(`[clickhouse] RESPONSE BODY:\n${res.body}`);
-  } catch (e) {
-    logger.error('[clickhouse] write response log failed', e);
+  if (debugMode.getDebugEnabled()) {
+    logger.info(`[clickhouse] === RESPONSE status=${res.status} (page=${requestBody.pageNo}) ===`);
+    try {
+      logger.info(`[clickhouse] RESPONSE BODY:\n${res.body}`);
+    } catch (e) {
+      logger.error('[clickhouse] write response log failed', e);
+    }
+  } else {
+    logger.info(`[clickhouse] response status=${res.status} page=${requestBody.pageNo} bodyLen=${String(res.body).length}`);
   }
 
   if (res.status !== 200) {
