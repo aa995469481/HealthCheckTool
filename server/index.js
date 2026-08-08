@@ -8,6 +8,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { logger, requestLogger } = require('./lib/logger');
+const healthCheckRoutes = require('./routes/health-check');
 
 const app = express();
 const PORT = 3000;
@@ -16,6 +17,9 @@ const DATA_FILE = path.join(DATA_DIR, 'tasks.json');
 
 app.use(express.json());
 app.use(requestLogger);
+
+/* ---------- 业务巡检 API（/api/health-check/*） ---------- */
+app.use('/api/health-check', healthCheckRoutes);
 
 /* ---------- 数据初始化：首次启动生成示例数据 ---------- */
 function ensureDataFile() {
