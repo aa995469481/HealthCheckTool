@@ -69,11 +69,11 @@ echo.
 echo [3/4] Starting services...
 echo.
 echo     Backend:  http://localhost:3000
-echo     Frontend: http://localhost:5173
+echo     Frontend: http://localhost:8080
 echo     Open the frontend URL in your browser once it is ready.
 echo.
 start "Server-3000" cmd /k "cd /d %~dp0server && npm start"
-start "Web-5173" cmd /k "cd /d %~dp0web && npm run dev"
+start "Web-8080" cmd /k "cd /d %~dp0web && npm run dev"
 echo.
 echo [4/4] Services are starting. You may close this window now.
 echo Note: do not run this script twice. Close the two black windows to stop.

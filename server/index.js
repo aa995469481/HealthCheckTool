@@ -2,10 +2,12 @@
  * 业务巡检管理系统 - 后端服务
  * 技术：Node.js + Express，数据以 JSON 文件本地存储
  * 启动：node index.js  （默认端口 3000）
+ * 日志：所有日志输出到 server/logs/app-YYYY-MM-DD.log（见 lib/logger.js）
  */
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { logger, requestLogger } = require('./lib/logger');
 
 const app = express();
 const PORT = 3000;
@@ -13,11 +15,13 @@ const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'tasks.json');
 
 app.use(express.json());
+app.use(requestLogger);
 
 /* ---------- 数据初始化：首次启动生成示例数据 ---------- */
 function ensureDataFile() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(DATA_FILE)) {
+    logger.info('[init] data file not found, creating seed data');
     const seed = [
       { id: 1, taskNo: 'XJ20260806001', name: '机房设备例行巡检', type: '设备巡检', area: 'A栋机房', person: '张伟', planDate: '2026-08-06', status: '进行中', remark: '检查服务器运行状态、温度与告警', createTime: '2026-08-06 09:00:00', updateTime: '2026-08-06 09:00:00' },
       { id: 2, taskNo: 'XJ20260806002', name: '办公楼消防通道检查', type: '消防巡检', area: '办公区', person: '李强', planDate: '2026-08-06', status: '待处理', remark: '检查消防通道是否畅通、灭火器压力', createTime: '2026-08-06 09:10:00', updateTime: '2026-08-06 09:10:00' },
@@ -29,6 +33,7 @@ function ensureDataFile() {
       { id: 8, taskNo: 'XJ20260806008', name: '停车场设施巡检', type: '设施巡检', area: '地下停车场', person: '周军', planDate: '2026-08-05', status: '待处理', remark: '检查照明、排水与标识标线', createTime: '2026-08-05 13:00:00', updateTime: '2026-08-05 13:00:00' }
     ];
     fs.writeFileSync(DATA_FILE, JSON.stringify(seed, null, 2), 'utf-8');
+    logger.info(`[init] seed data created: ${seed.length} tasks`);
   }
 }
 
@@ -37,12 +42,17 @@ function readTasks() {
   try {
     return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
   } catch (e) {
+    logger.error('[data] read tasks failed', e);
     return [];
   }
 }
 
 function writeTasks(tasks) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(tasks, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(tasks, null, 2), 'utf-8');
+  } catch (e) {
+    logger.error('[data] write tasks failed', e);
+  }
 }
 
 function formatTime(date = new Date()) {
@@ -126,6 +136,7 @@ app.post('/api/tasks', (req, res) => {
   };
   tasks.push(task);
   writeTasks(tasks);
+  logger.info(`[task] create id=${task.id} taskNo=${task.taskNo} name=${task.name}`);
   res.json(ok(task));
 });
 
@@ -150,6 +161,7 @@ app.put('/api/tasks/:id', (req, res) => {
     updateTime: formatTime()
   };
   writeTasks(tasks);
+  logger.info(`[task] update id=${id} status=${tasks[idx].status} name=${tasks[idx].name}`);
   res.json(ok(tasks[idx]));
 });
 
@@ -161,13 +173,16 @@ app.delete('/api/tasks/:id', (req, res) => {
   if (!exists) return res.json(fail('任务不存在'));
   tasks = tasks.filter((t) => t.id !== id);
   writeTasks(tasks);
+  logger.info(`[task] delete id=${id}`);
   res.json(ok({ id }));
 });
 
 /* ---------- 启动 ---------- */
 app.listen(PORT, () => {
+  logger.info(`[start] server listening on http://localhost:${PORT}`);
   console.log('============================================');
   console.log('  业务巡检管理系统 - 后端服务已启动');
   console.log(`  接口地址: http://localhost:${PORT}/api/tasks`);
+  console.log(`  日志文件: ${logger.currentLogFile()}`);
   console.log('============================================');
 });

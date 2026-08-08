@@ -1,0 +1,351 @@
+================================================================================
+                        业务巡检功能详细介绍
+================================================================================
+
+一、功能概述
+================================================================================
+
+业务巡检（HealthCheckTool）是一个基于日志的健康检查系统，用于定期查询 ClickHouse 数据库（通过
+Wise DevOps 平台），对钱包/交通卡服务的业务日志进行自动化巡检、分析并生成报告。该功能由三层架构组成：
+
+  1. Python 核心引擎（tools/HealthCheckTool/）：负责数据采集、场景管理、摘要生成
+  2. Node.js 后端 API（backend/）：提供 Web 服务接口，协调 Python 工具与前端交互
+  3. Vue.js 前端界面（frontend/）：提供可视化的配置、执行与结果展示
+
+导航菜单中有两个入口：
+  - "业务巡检"（/health-check-export）：功能完整的巡检界面（生产可用）
+  - "交通卡业务巡检"（/traffic-card-inspection）：简化的交通卡专属界面（开发中）
+
+================================================================================
+二、Python 核心引擎（tools/HealthCheckTool/）
+================================================================================
+
+2.1 目录结构
+────────────────────────────────────────────────────────────────────────────────
+tools/HealthCheckTool/
+├── main.py                      # CLI 入口：执行巡检、导出 JSON
+├── config.yaml                  # 全局配置：API URL、请求头、body_defaults、scenarios 目录
+├── credential_resolver.py       # Wise DevOps 凭据管理（登录、状态查询、解析）
+├── fetcher.py                   # HTTP 请求引擎：分页查询、请求体构建、字段投影
+├── scenario_loader.py           # 基于目录的场景发现机制
+├── inspection_profile.py        # 巡检计划管理：app_ver 注入、场景过滤
+├── summary_builder.py           # 从记录中构建中文摘要（成功/失败统计）
+├── requirements.txt             # Python 依赖：requests, pyyaml
+├── secrets.yaml                 # 实际凭据（Cookie + x-csrf-token）
+├── scenarios/                   # 场景定义目录
+│   ├── wallet_client/           # 表：wallet_client
+│   │   └── backup_restore_retry/    # Wallet 备份/恢复-retry 日志（默认禁用）
+│   └── wallet_client_hmos/      # 表：wallet_client_hmos（交通卡相关）
+│       ├── moveIn/              # 单框架交通卡迁入巡检日志
+│       ├── 开卡/                # 单框架交通卡开卡巡检日志
+│       ├── 充值/                # 单框架交通卡充值巡检日志
+│       ├── 迁出/                # 单框架交通卡迁出巡检日志
+│       ├── 暂停服务/            # 单框架交通卡暂停服务巡检日志
+│       └── 注销服务/            # 单框架交通卡注销服务巡检日志
+├── exports/                     # 导出 JSON 结果目录
+├── 执行请求.bat                  # 批处理：执行巡检并打印摘要
+├── 导出JSON.bat                  # 批处理：执行巡检并导出 JSON
+├── 初始化secrets配置.bat         # 批处理：复制 secrets 模板
+└── 安装依赖.bat                  # 批处理：安装 pip 依赖
+
+2.2 核心模块详解
+────────────────────────────────────────────────────────────────────────────────
+
+【main.py — CLI 入口】
+  - 命令行参数：-c/--config（配置文件）、--secrets（凭据文件）、--json-out（输出路径）、
+    --begin/--end（时间范围）、--profile-json（巡检计划文件）
+  - 执行流程：
+    1. 加载 config.yaml 配置
+    2. 解析凭据（优先级：wise-log-fetcher 会话 > secrets.yaml > 环境变量）
+    3. 展开目录下的所有场景
+    4. 应用巡检计划（过滤场景、注入 app_ver 和时间范围）
+    5. 逐场景发起 HTTP 请求（分页获取数据）
+    6. 生成中文摘要统计
+    7. 字段投影（只保留需要的输出字段）
+    8. 写入 JSON 文件或打印摘要
+  - 退出码：0 = 全部成功，2 = 部分场景失败
+
+【config.yaml — 全局配置】
+  - API 端点：https://console-drcn.wisedevops.huawei.com/edge/WiseEyeAIOpsService/aiops/gateway/api/logretrieval/api/clickhouse/queryWithTotal/
+  - 请求头配置：service IDs、tenant IDs 等 Wise DevOps 平台认证参数
+  - body_defaults：通用请求体字段（id、beginTimestamp、endTimestamp、pageNo、pageSize 等）
+  - scenarios_dir: "scenarios" — 指向场景定义目录
+
+【credential_resolver.py — 凭据管理】
+  - 凭据解析优先级链：
+    1. 环境变量（LOG_COOKIE + LOG_CSRF_TOKEN）
+    2. wise-log-fetcher 会话文件（~/.cache/wise-log-fetcher/session.json）
+    3. secrets.yaml 或 secrets.json 文件
+  - 子命令：
+    - status：输出凭据状态 JSON（供 Node.js 后端调用）
+    - login：调用 wise-log-fetcher login 启动 Chrome SSO 登录流程
+  - 会话新鲜度检查：最大 24 小时
+  - --force 标志：强制重新登录（忽略现有会话）
+
+【fetcher.py — HTTP 请求引擎】
+  - prepare_body()：深拷贝配置请求体，解析时间戳
+    - 支持日期格式：YYYY-MM-DD、YYYY-MM-DD HH:MM:SS、ISO、毫秒时间戳
+    - 支持相对时间：-24h、now
+  - fetch_all_pages()：分页 POST 请求（最多 200 页，每页 500 条）
+  - fetch_total_once()：单次请求仅获取 total 计数
+  - project_record_fields()：字段投影，只保留 response_fields.json 中指定的字段
+  - resolve_json_path()：点号路径解析器（支持数组索引如 key[0]）
+
+【scenario_loader.py — 场景发现】
+  - 扫描 scenarios/<table>/<scenario>/ 目录结构
+  - 每个场景必需文件：
+    - meta.yaml：标题、集群、启用标志
+    - filters.yaml：主查询的过滤条件
+    - response_fields.json：输出字段投影 + 摘要配置
+  - 可选文件：count_filters.yaml（用于总数查询的独立过滤条件）
+  - 组装场景配置：body_defaults + name(表名) + cluster(来自 meta) +
+    filterCondition(来自 filters)
+
+【inspection_profile.py — 巡检计划管理】
+  - Profile 概念：一个发版巡检计划，包含 app_ver、enabled_scenarios、时间范围
+  - apply_inspection_profile()：
+    - 按 enabled_scenarios 列表过滤场景
+    - 注入 app_ver 到过滤条件的 inFilters 数组中
+    - 注入 beginTimestamp 和 endTimestamp
+  - list_scenario_catalog()：返回所有可发现场景的目录（供 UI 使用）
+  - default_profile_from_catalog()：默认勾选 meta_enabled 的场景
+  - CLI 命令：list-scenarios 输出 JSON 目录
+
+【summary_builder.py — 摘要生成】
+  - record_is_failure()：判断记录是否为"失败"
+    - 基于 failure_field、failure_values、failure_match_mode（in/not_in）
+    - 例如：funcResult not in [1] 表示 funcResult 不等于 1 即为失败
+  - build_inspection_summary()：生成中文摘要文本
+    - 如："此次巡检命中了100条，其中成功了95条，失败了5条，成功率为95.0%。"
+  - 计算失败分布：按错误码分组统计
+  - filter_to_failed_records_only()：仅保留失败记录（当 summary 启用时）
+
+2.3 场景定义详情（共 7 个场景）
+────────────────────────────────────────────────────────────────────────────────
+
+场景 ID                        | 标题                           | 数据表               | 集群                    | 失败判定
+-------------------------------|-------------------------------|---------------------|------------------------|---------------------------
+wallet_client_hmos/moveIn      | 单框架交通卡迁入巡检日志       | wallet_client_hmos   | ulan1-aiops-ch-az1-4    | funcResult not in [1]
+wallet_client_hmos/开卡         | 单框架交通卡开卡巡检日志       | wallet_client_hmos   | ulan1-aiops-ch-az1-4    | funcResult not in [1,2]
+wallet_client_hmos/充值         | 单框架交通卡充值巡检日志       | wallet_client_hmos   | ulan1-aiops-ch-az1-4    | funcResult not in [1,2]
+wallet_client_hmos/迁出         | 单框架交通卡迁出巡检日志       | wallet_client_hmos   | ulan1-aiops-ch-az1-4    | funcResult not in [1,2]
+wallet_client_hmos/暂停服务     | 单框架交通卡暂停服务巡检日志   | wallet_client_hmos   | ulan1-aiops-ch-az1-4    | funcResult not in [0]
+wallet_client_hmos/注销服务     | 单框架交通卡注销服务巡检日志   | wallet_client_hmos   | ulan1-aiops-ch-az1-4    | funcResult not in [0]
+wallet_client/backup_restore_retry | Wallet 备份/恢复-retry 日志 | wallet_client        | ulan1-aiops-ch-az1-3    | internal_errcode not in [0]（当前禁用）
+
+所有交通卡场景共享相同的 response_fields.json 模式：
+  - 提取字段：cplc, funcResult, happenedTime, issueID, issueName, uid,
+    walletEventDesc, walletEventExtCode, walletEventID, walletEventInCode, _app_ver
+  - 错误码字段：walletEventInCode（标签为"内部错误码"）
+
+================================================================================
+三、Node.js 后端 API
+================================================================================
+
+3.1 health-check-routes.js — 主巡检 API（/api/health-check/*）
+────────────────────────────────────────────────────────────────────────────────
+
+路由                               | 方法   | 功能
+-----------------------------------|--------|------------------------------------------------
+/api/health-check/credentials      | GET    | 查询凭据状态（调用 Python credential_resolver.py status）
+/api/health-check/secrets          | GET    | [已废弃] 返回脱敏的凭据状态
+/api/health-check/secrets          | POST   | 保存 Cookie + x-csrf-token 到 secrets.yaml
+/api/health-check/wise-login       | POST   | 触发 Chrome SSO 登录（调用 wise-log-fetcher login）
+/api/health-check/scenarios        | GET    | 列出所有可配置场景（调用 inspection_profile.py list-scenarios）
+/api/health-check/inspection-profiles | GET | 获取已保存的巡检计划 + 活跃计划 ID + 默认计划
+/api/health-check/inspection-profiles | POST| 创建/保存巡检计划
+/api/health-check/export-json      | POST   | 核心：执行完整巡检，返回 JSON 数据或文件下载
+/api/health-check/ai-report        | POST   | 使用 LLM 生成 AI 巡检报告
+
+关键实现细节：
+  - 工具根目录解析：环境变量 HEALTHCHECK_TOOL_ROOT > tools/HealthCheckTool/ > 上级目录
+  - 通过 spawnSync 调用 Python 子进程执行所有操作
+  - 巡检数据缓存（inspectCacheId）：将大型 JSON 存储在
+    backend/temp/health-check-inspect-cache/，2 小时 TTL，最多 24 条，
+    避免生成 AI 报告时传递过大的请求体
+  - 巡检计划存储：backend/data/health-check-profiles.json
+
+3.2 traffic-card-routes.js — 简化的交通卡凭据 API
+────────────────────────────────────────────────────────────────────────────────
+
+路由                               | 方法   | 功能
+-----------------------------------|--------|------------------------------------------------
+/api/traffic-card/credentials      | GET    | 检查交通卡凭据是否已配置
+/api/traffic-card/credentials      | POST   | 保存交通卡凭据（baseUrl + token + cookie + csrfToken）
+
+使用独立的 traffic-card-secrets.json 存储凭据。这是为交通卡专属视图提供的简化凭据管理。
+
+3.3 inspection-llm-context.js — LLM 上下文构建器
+────────────────────────────────────────────────────────────────────────────────
+
+  - 将巡检 JSON 裁剪为适合喂给大模型的上下文（最大 12,000 字符）
+  - 记录脱敏：移除敏感字段（uid、cplc、transId），保留 28 个安全字段白名单
+  - 失败记录抽样：每场景最多 5 条，每个错误码最多 2 条
+  - 三级裁剪策略：
+    1. 完整数据（如不超过限制）
+    2. 失败抽样缩减至 3 条 + 错误码分布缩减至 8 项
+    3. 移除全部 failure_samples
+  - System Prompt：生成结构化中文 Markdown 报告，包含 6 个章节：
+    1. 巡检概况（时间、范围、版本、计划名、整体结论）
+    2. 分场景结果（表格：场景名/状态/命中率/失败数/Top3错误码）
+    3. 风险与异常（按严重程度排序）
+    4. 失败个案洞察（基于抽样）
+    5. 建议动作（排查方向、是否阻塞发版、跟进角色）
+    6. 数据说明（partial 影响、抽样说明）
+
+================================================================================
+四、前端界面
+================================================================================
+
+4.1 HealthCheckExportView.vue — 完整巡检界面（/health-check-export，菜单"业务巡检"）
+────────────────────────────────────────────────────────────────────────────────
+
+界面分为三大区块：
+
+【凭据设置卡片】
+  - 状态指示器：绿色圆点 = 已配置，黄色圆点 = 未配置
+  - "Wise 登录"按钮：打开 Chrome SSO 登录窗口
+  - "强制重新登录"按钮：忽略现有会话重新登录
+  - "刷新状态"按钮：重新查询凭据状态
+  - 折叠面板"高级：手动粘贴 Cookie（回退方案）"：
+    - Cookie 输入框（从 F12 → Network → 请求头中复制）
+    - x-csrf-token 输入框
+    - "保存到 secrets.yaml"按钮
+  - 未安装 wise-log-fetcher 时显示安装提示
+
+【巡检计划卡片】
+  - 计划名称输入（如"1.0.23.300 发版巡检"）
+  - 目标版本 app_ver 输入（运行时注入所有场景 filters，无需修改 yaml 文件）
+  - 查询时间范围：日期范围选择器（留空则使用 config.yaml 默认值）
+  - 参与巡检的场景：
+    - 按数据表分组的复选框（wallet_client / wallet_client_hmos）
+    - "全选"/"全不选"/"仅 meta 默认启用"快捷按钮
+    - 已选数量统计
+  - "保存计划"按钮：保存当前配置为可复用的巡检计划
+  - "加载已保存计划"下拉框：选择之前保存的计划
+  - "执行巡检"主按钮：开始执行巡检
+
+【巡检结果卡片】
+  - 巡检概览表格：导出时间、建议文件名、查询时间范围、目标版本、计划名称、场景标签
+  - 各场景摘要卡片（网格布局）：
+    - 场景名称 + 状态标签（成功/失败）
+    - 失败场景显示错误信息
+    - 成功场景显示：服务端 total、本机拉取条数、统计查询 total
+    - 摘要文本（中文描述，如"命中XX条，成功XX条，失败XX条，成功率XX%"）
+    - 指标标签：命中数、成功数、失败数、成功率
+    - 失败分布列表：错误码 → 条数
+  - 操作按钮：
+    - 下载完整 JSON
+    - 复制完整 JSON
+    - 生成 AI 巡检报告（调用 LLM 生成 Markdown 报告）
+    - 复制报告
+  - AI 巡检报告区域：
+    - 输入裁剪提示（如数据过多会自动缩减）
+    - 加载动画（1~10 分钟）
+    - Markdown 渲染的报告内容（使用 marked + DOMPurify）
+  - 折叠面板"原始 JSON（调试用）"：查看原始 JSON 数据
+
+4.2 TrafficCardInspectionView.vue — 交通卡专属界面（/traffic-card-inspection，开发中）
+────────────────────────────────────────────────────────────────────────────────
+
+当前功能：
+  - 凭据设置卡片：
+    - 状态指示器
+    - "配置凭据"按钮 → 弹窗输入 baseUrl、token、cookie、csrfToken
+    - 折叠面板显示凭据详情（配置状态、来源、更新时间、Cookie/CSRF 预览）
+  - 巡检任务卡片：
+    - 当前显示占位信息："巡检功能开发中，凭据设置已就绪后即可对接后续接口"
+
+================================================================================
+五、完整数据流
+================================================================================
+
+用户点击"执行巡检"
+  │
+  ▼
+前端 POST /api/health-check/export-json { display: true, profile: {name, app_ver, beginTimestamp, endTimestamp, enabled_scenarios} }
+  │
+  ▼
+后端：
+  1. 校验凭据状态
+  2. 将巡检计划写入临时 JSON 文件
+  3. spawnSync 调用：python main.py --config config.yaml --profile-json profile.json --json-out output.json
+  │
+  ▼
+Python main.py 执行：
+  1. load_config() → 加载 YAML 配置 + 凭据
+  2. expand_directory_scenarios() → 扫描 scenarios/ 目录组装场景列表
+  3. apply_inspection_profile() → 按 enabled_scenarios 过滤，注入 app_ver 和时间范围
+  4. fetch_all() → 对每个场景：分页 POST 请求到 ClickHouse API
+  5. build_inspection_summary() → 生成中文摘要统计
+  6. project_record_fields() → 过滤到指定输出字段
+  7. 写入 JSON 文件
+  │
+  ▼
+后端读取 JSON，存入内存缓存（inspectCacheId），返回 { data, inspectCacheId, partial, filename }
+  │
+  ▼
+前端展示结果：场景卡片、指标标签、失败分布
+  │
+  ▼
+用户点击"生成 AI 巡检报告"
+  │
+  ▼
+前端 POST /api/health-check/ai-report { inspectCacheId, partial }
+  │
+  ▼
+后端：
+  1. loadInspectCache() → 获取完整巡检数据
+  2. buildInspectionLlmContext() → 脱敏、裁剪、抽样
+  3. llm.chat() 使用 system prompt → 生成 Markdown 报告
+  │
+  ▼
+前端用 marked + DOMPurify 渲染 Markdown 报告
+
+================================================================================
+六、关键文件清单
+================================================================================
+
+文件                                     | 路径                                           | 角色
+-----------------------------------------|-----------------------------------------------|---------------------------
+main.py                                  | tools/HealthCheckTool/main.py                  | Python CLI 入口
+config.yaml                              | tools/HealthCheckTool/config.yaml              | 全局 API 配置
+credential_resolver.py                   | tools/HealthCheckTool/credential_resolver.py   | Wise 凭据解析
+fetcher.py                               | tools/HealthCheckTool/fetcher.py               | HTTP 请求+分页引擎
+scenario_loader.py                       | tools/HealthCheckTool/scenario_loader.py       | 目录场景发现
+inspection_profile.py                    | tools/HealthCheckTool/inspection_profile.py    | 巡检计划管理
+summary_builder.py                       | tools/HealthCheckTool/summary_builder.py       | 中文摘要生成
+health-check-routes.js                   | backend/health-check-routes.js                 | 后端 API 路由
+traffic-card-routes.js                   | backend/traffic-card-routes.js                 | 交通卡凭据 API
+inspection-llm-context.js                | backend/lib/inspection-llm-context.js          | LLM 上下文构建+System Prompt
+health-check-profiles.json               | backend/data/health-check-profiles.json        | 巡检计划存储
+HealthCheckExportView.vue                 | frontend/src/views/HealthCheckExportView.vue   | 完整巡检 UI
+TrafficCardInspectionView.vue            | frontend/src/views/TrafficCardInspectionView.vue | 交通卡 UI (WIP)
+router/index.ts                          | frontend/src/router/index.ts                   | 路由定义
+server-simple.js                         | backend/server-simple.js                       | 服务器入口
+
+================================================================================
+七、核心设计要点（供复刻参考）
+================================================================================
+
+1. 【场景目录化】场景定义以目录结构组织，每个场景独立目录包含 meta/filters/fields，
+   支持热插拔新增场景无需改代码
+
+2. 【巡检计划机制】通过 Profile 实现发版本地化巡检配置，app_ver 和场景勾选在运行时
+   注入，无需修改任何 YAML 文件
+
+3. 【凭据多级解析】支持环境变量 > SSO 会话 > 手动配置文件三级凭据回退
+
+4. 【分页+字段投影】大量日志数据通过分页获取（最多 200 页×500 条），仅投影必要字段
+   减少数据量
+
+5. 【LLM 上下文裁剪】三级渐进裁剪策略（完整→缩减抽样→移除抽样），确保上下文不超过
+   12,000 字符，同时保留关键分析信息
+
+6. 【缓存机制】巡检结果缓存在后端内存（2h TTL），AI 报告生成时通过 cacheId 引用，
+   避免大 JSON 在请求体中重复传递
+
+7. 【AI 报告结构化】System Prompt 强制 6 章节结构输出，禁止编造数据，数据不足时显式标注
+
+8. 【脱敏策略】uid/cplc/transId 等敏感字段在喂给 LLM 前移除，前端也仅显示 Cookie/CSRF
+   的前几位预览
