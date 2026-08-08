@@ -225,8 +225,10 @@ async function generateDailyReport({ mock = false } = {}) {
   }
   const cfg = aiConfig.getConfig();
   const maxChars = cfg.maxCharsPerPrompt && cfg.maxCharsPerPrompt > 0 ? cfg.maxCharsPerPrompt : 12000;
+  // 计划名清洗：空或历史遗留的 'unnamed' 一律视为未命名，避免出现在日报标题/主题中
+  const planName = analysis.plan && String(analysis.plan) !== 'unnamed' ? String(analysis.plan) : '';
 
-  logger.info(`[ai-report] start scenes=${summaries.length} mock=${mock} maxChars=${maxChars}`);
+  logger.info(`[ai-report] start scenes=${summaries.length} mock=${mock} maxChars=${maxChars} plan=${planName || '(未命名)'}`);
 
   // 第一步：每个场景分批调用，生成该场景的问题分析
   const sceneReports = [];
@@ -239,7 +241,7 @@ async function generateDailyReport({ mock = false } = {}) {
 
   // 第二步：汇总调用，生成三段式完整日报
   const overviewLines = [
-    `- 巡检计划：${analysis.plan || '未命名计划'}`,
+    `- 巡检计划：${planName || '未命名计划'}`,
     `- 目标版本：${analysis.appVer || '未指定'}`,
     `- 巡检时间：${formatTimeRange(analysis.beginTimestamp, analysis.endTimestamp)}`,
     `- 巡检场景数：${summaries.length}`,
@@ -293,13 +295,13 @@ async function generateDailyReport({ mock = false } = {}) {
 
   // 第三步：转 HTML
   const html = buildHtmlPage(markdown, {
-    plan: analysis.plan || '',
+    plan: planName,
     createdAt: new Date().toISOString()
   });
 
   const meta = {
     createdAt: new Date().toISOString(),
-    plan: analysis.plan || '',
+    plan: planName,
     appVer: analysis.appVer || '',
     beginTimestamp: analysis.beginTimestamp || '',
     endTimestamp: analysis.endTimestamp || '',

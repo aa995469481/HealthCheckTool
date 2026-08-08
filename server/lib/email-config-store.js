@@ -11,7 +11,7 @@ const { logger } = require('./logger');
 
 const FILE = path.join(__dirname, '..', 'data', 'email-config.json');
 
-const DEFAULTS = { to: '', cc: '', subject: '' };
+const DEFAULTS = { from: '', to: '', cc: '', subject: '' };
 
 function load() {
   try {

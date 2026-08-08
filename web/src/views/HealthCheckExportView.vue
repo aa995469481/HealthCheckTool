@@ -329,6 +329,9 @@
     <!-- 导出邮件(.eml) 对话框 -->
     <el-dialog v-model="emailDialogVisible" title="导出为邮件（.eml，正文内嵌日报 HTML）" width="560px">
       <el-form label-width="80px">
+        <el-form-item label="发件人">
+          <el-input v-model="emailForm.from" placeholder="你的邮箱（可选，如 zhang@xx.com）" />
+        </el-form-item>
         <el-form-item label="主送" required>
           <el-input v-model="emailForm.to" placeholder="多个邮箱用逗号分隔，如 a@xx.com,b@yy.com" />
         </el-form-item>
@@ -339,7 +342,7 @@
           <el-input v-model="emailForm.subject" placeholder="邮件主题" />
         </el-form-item>
       </el-form>
-      <div class="email-hint">生成 .eml 文件后，可用 Outlook / Foxmail 等邮件客户端打开，确认无误后直接发送。</div>
+      <div class="email-hint">生成 .eml 文件后，用 Outlook / Foxmail 等双击打开会以「待发送」状态显示（可直接点发送按钮）；发件人留空时使用占位地址。</div>
       <template #footer>
         <el-button @click="emailDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="exportingEmail" @click="exportEml">保存并导出</el-button>
@@ -382,7 +385,7 @@ const correctionInput = ref('');
 /* 导出邮件(.eml) */
 const emailDialogVisible = ref(false);
 const exportingEmail = ref(false);
-const emailForm = reactive({ to: '', cc: '', subject: '' });
+const emailForm = reactive({ from: '', to: '', cc: '', subject: '' });
 /* 聚类摘要：展开的场景名列表，默认全部折叠 */
 const expandedScenes = ref([]);
 
@@ -861,6 +864,7 @@ async function removeCorrection(c) {
 async function loadEmailConfig() {
   try {
     const data = await request('/api/health-check/email-config');
+    emailForm.from = data.from || '';
     emailForm.to = data.to || '';
     emailForm.cc = data.cc || '';
     emailForm.subject = data.subject || '';
@@ -872,12 +876,13 @@ async function loadEmailConfig() {
 async function openEmailDialog() {
   emailDialogVisible.value = true;
   await loadEmailConfig();
-  // 主题为空时给默认值
+  // 主题为空时给默认值（计划名为空或为 'unnamed' 时不带计划名）
   if (!emailForm.subject.trim()) {
     const d = new Date();
     const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const planName = analysis.value ? analysis.value.plan : '';
-    emailForm.subject = `业务巡检日报${planName ? ` - ${planName}` : ''} - ${day}`;
+    const planLabel = planName && planName !== 'unnamed' ? ` - ${planName}` : '';
+    emailForm.subject = `业务巡检日报${planLabel} - ${day}`;
   }
 }
 
@@ -895,13 +900,13 @@ async function exportEml() {
     // 保存配置，供下次预填
     await request('/api/health-check/email-config', {
       method: 'POST',
-      body: JSON.stringify({ to: emailForm.to, cc: emailForm.cc, subject: emailForm.subject })
+      body: JSON.stringify({ from: emailForm.from, to: emailForm.to, cc: emailForm.cc, subject: emailForm.subject })
     });
     // 生成 .eml 并下载
     const res = await fetch('/api/health-check/ai-report-eml', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: emailForm.to, cc: emailForm.cc, subject: emailForm.subject, html: aiReport.value.html })
+      body: JSON.stringify({ from: emailForm.from, to: emailForm.to, cc: emailForm.cc, subject: emailForm.subject, html: aiReport.value.html })
     });
     const contentType = res.headers.get('Content-Type') || '';
     if (contentType.includes('message/rfc822')) {

@@ -24,17 +24,27 @@ function wrapBase64(b64) {
 
 /**
  * 构建 .eml 文件内容
- * @param {object} opts { to: 'a@x.com,b@y.com', cc?: string, subject: string, html: string, fromName?, fromAddr? }
+ * @param {object} opts { to, cc?, subject, html, from?, fromName?, includeUnsent? }
  * @returns {string} eml 内容（CRLF 换行）
+ *
+ * 说明：
+ *   - X-Unsent: 1（RFC 4155）：标识这是一封「未发送」的邮件，
+ *     Outlook / Windows 邮件等客户端双击打开时会以「待发送」模式显示（出现发送按钮），
+ *     而不是当作已保存的完整邮件只读预览
+ *   - From 默认 no-reply@localhost；fromName 为空时不在 From 中显示名称
  */
-function buildEml({ to, cc, subject, html, fromName = '业务巡检日报', fromAddr = 'no-reply@localhost' }) {
+function buildEml({ to, cc, subject, html, from = 'no-reply@localhost', fromName = '', includeUnsent = true }) {
+  const fromHeader = fromName && String(fromName).trim()
+    ? `From: ${encodeRFC2047(String(fromName).trim())} <${String(from)}>`
+    : `From: ${String(from)}`;
   const headers = [
-    `From: ${encodeRFC2047(fromName)} <${fromAddr}>`,
+    fromHeader,
     `To: ${String(to || '').trim()}`,
     cc && String(cc).trim() ? `Cc: ${String(cc).trim()}` : '',
     `Subject: ${encodeRFC2047(subject)}`,
     `Date: ${new Date().toUTCString()}`,
     'MIME-Version: 1.0',
+    includeUnsent ? 'X-Unsent: 1' : '',
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     ''
