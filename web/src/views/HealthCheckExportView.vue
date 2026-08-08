@@ -14,12 +14,17 @@
         </div>
       </template>
       <div class="credential-row">
-        <span class="dot" :class="credential.configured ? 'dot-green' : 'dot-yellow'"></span>
+        <span class="dot" :class="credential.expired ? 'dot-red' : (credential.configured ? 'dot-green' : 'dot-yellow')"></span>
         <span class="credential-text">
-          {{ credential.configured ? '凭据已配置' : '凭据未配置，请点击「Wise 登录」自动获取，或手动粘贴' }}
+          <template v-if="credential.expired">
+            凭据已过期{{ credential.expiredAt ? '（' + credential.expiredAt + '）' : '' }}，请重新点击「Wise 登录」刷新
+          </template>
+          <template v-else-if="credential.configured">凭据已配置</template>
+          <template v-else>凭据未配置，请点击「Wise 登录」自动获取，或手动粘贴</template>
         </span>
-        <el-tag v-if="credential.source" size="small" type="info">{{ credential.source }}</el-tag>
-        <el-tag v-if="credential.updatedAt" size="small" type="warning">更新于 {{ credential.updatedAt }}</el-tag>
+        <el-tag v-if="credential.expired" size="small" type="danger">已过期</el-tag>
+        <el-tag v-if="credential.source && !credential.expired" size="small" type="info">{{ credential.source }}</el-tag>
+        <el-tag v-if="credential.updatedAt && !credential.expired" size="small" type="warning">更新于 {{ credential.updatedAt }}</el-tag>
       </div>
 
       <el-collapse class="credential-collapse">
@@ -189,7 +194,7 @@ import { reactive, ref, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay } from '@element-plus/icons-vue';
 
-const credential = reactive({ configured: false, source: '', updatedAt: '' });
+const credential = reactive({ configured: false, expired: false, expiredAt: '', source: '', updatedAt: '' });
 const loggingIn = ref(false);
 const savingSecrets = ref(false);
 const manualForm = reactive({ cookie: '', xCsrfToken: '' });
@@ -232,6 +237,8 @@ async function loadCredentials() {
   try {
     const data = await request('/api/health-check/credentials');
     credential.configured = data.configured;
+    credential.expired = !!data.expired;
+    credential.expiredAt = data.expiredAt || '';
     credential.source = data.source || '';
     credential.updatedAt = data.updatedAt || '';
   } catch (e) {
@@ -250,6 +257,8 @@ async function wiseLogin() {
     });
     const data = await request('/api/health-check/wise-login', { method: 'POST' });
     credential.configured = data.configured;
+    credential.expired = false;
+    credential.expiredAt = '';
     credential.source = data.source || '';
     credential.updatedAt = data.updatedAt || '';
     ElMessage.success(data.configured ? '登录成功，凭据已获取' : '登录完成，但凭据不完整');
@@ -272,6 +281,8 @@ async function saveSecrets() {
       body: JSON.stringify({ cookie: manualForm.cookie.trim(), xCsrfToken: manualForm.xCsrfToken.trim() })
     });
     credential.configured = data.configured;
+    credential.expired = false;
+    credential.expiredAt = '';
     credential.source = data.source || '';
     credential.updatedAt = data.updatedAt || '';
     manualForm.cookie = '';
@@ -384,6 +395,8 @@ async function runInspection() {
     ElMessage.success('巡检执行完成');
   } catch (e) {
     ElMessage.error(e.message || '巡检执行失败');
+    // 若因凭据过期失败，刷新凭据状态以显示过期提示
+    if (e.message && e.message.includes('凭据已过期')) loadCredentials();
   } finally {
     running.value = false;
   }
@@ -438,6 +451,8 @@ async function runDebugQuery() {
   } catch (e) {
     debugResultText.value = '';
     ElMessage.error(e.message || '调试查询失败');
+    // 若因凭据过期失败，刷新凭据状态以显示过期提示
+    if (e.message && e.message.includes('凭据已过期')) loadCredentials();
   } finally {
     debugRunning.value = false;
   }
@@ -499,6 +514,9 @@ onMounted(() => {
 }
 .dot-yellow {
   background: #faad14;
+}
+.dot-red {
+  background: #f5222d;
 }
 .credential-text {
   font-size: 14px;

@@ -196,6 +196,11 @@ async function queryOnce(requestBody) {
   }
 
   if (res.status !== 200) {
+    // 401：凭据过期/失效，标记过期并提示用户重新登录刷新凭据
+    if (res.status === 401) {
+      secretsStore.markExpired('HTTP 401 user don\'t login');
+      throw new Error('凭据已过期，请重新点击「Wise 登录」刷新凭据');
+    }
     throw new Error(`查询接口返回异常状态码 ${res.status}：${String(res.body).slice(0, 500)}`);
   }
 

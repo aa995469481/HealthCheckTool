@@ -83,7 +83,7 @@ function formatTime(date = new Date()) {
   return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`;
 }
 
-/** 保存凭据（cookie + csrf），记录来源与时间 */
+/** 保存凭据（cookie + csrf），记录来源与时间，并清除过期标记 */
 function saveSecrets({ cookie, xCsrfToken, source }) {
   writeSecrets({
     cookie: cookie || '',
@@ -94,12 +94,27 @@ function saveSecrets({ cookie, xCsrfToken, source }) {
   logger.info(`[secrets] saved source=${source} cookieLen=${String(cookie || '').length} csrfLen=${String(xCsrfToken || '').length}`);
 }
 
-/** 凭据状态：是否已配置 + 预览（脱敏） */
+/** 凭据被服务端判定失效（如 401）时标记过期，提醒用户重新登录 */
+function markExpired(reason) {
+  const s = readSecrets();
+  writeSecrets({
+    ...s,
+    expired: 'true',
+    expired_at: formatTime(),
+    expired_reason: reason || ''
+  });
+  logger.warn(`[secrets] marked expired: ${reason || 'unknown reason'}`);
+}
+
+/** 凭据状态：是否已配置 + 是否已过期 + 预览（脱敏） */
 function getStatus() {
   const s = readSecrets();
   const configured = Boolean(s.cookie && s.x_csrf_token);
   return {
     configured,
+    expired: s.expired === 'true',
+    expiredAt: s.expired_at || '',
+    expiredReason: s.expired_reason || '',
     source: s.source || '',
     updatedAt: s.updated_at || '',
     cookiePreview: s.cookie ? s.cookie.slice(0, 12) + '...' : '',
@@ -113,4 +128,4 @@ function getCredentialPair() {
   return { cookie: s.cookie || '', xCsrfToken: s.x_csrf_token || '' };
 }
 
-module.exports = { readSecrets, saveSecrets, getStatus, getCredentialPair, SECRETS_FILE };
+module.exports = { readSecrets, saveSecrets, getStatus, getCredentialPair, markExpired, SECRETS_FILE };
