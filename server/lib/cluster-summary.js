@@ -5,7 +5,7 @@
  *   - 聚类字段 clusterFields 由用户在场景管理中多选（默认内码 + 外码）
  *   - 每个字段都是独立的 1 级分析维度，各自按字段取值分组统计（并列展示，互不级联）
  *   - 字段排列顺序仅决定展示顺序，无层级含义
- *   - 每个维度统计：分组条数/占比、版本分布（_app_ver）
+ *   - 每个维度统计：分组条数/占比
  *   - Top K：每个维度仅保留条数最多的前 7 个分组，其余并入「其他」只列总条数与组数
  *   - 小聚类：每个维度内，占比 < 1% 且条数 < 5 的分组同样并入「其他」
  *   - 代表样本：每个维度每组抽取 2 条（信息全 + 覆盖不同版本/时段）
@@ -72,17 +72,6 @@ function richness(record, fields) {
 
 /* ---------- 统计工具 ---------- */
 
-function calcVersionDist(records, versionField) {
-  const map = new Map();
-  for (const r of records) {
-    const v = fieldValue(r, versionField) || '未知';
-    map.set(v, (map.get(v) || 0) + 1);
-  }
-  return [...map.entries()]
-    .map(([version, count]) => ({ version, count }))
-    .sort((a, b) => b.count - a.count);
-}
-
 function pickSamples(records, focusFields, versionField) {
   const candidates = records.slice().sort((a, b) => richness(b, focusFields) - richness(a, focusFields));
   if (candidates.length === 0) return [];
@@ -138,7 +127,6 @@ function buildClusterSummary(scene, records) {
         field,
         count,
         percent,
-        versionDist: calcVersionDist(subList, versionField),
         samples: pickSamples(subList, focusFields, versionField)
       });
     }
@@ -202,9 +190,6 @@ function toMarkdown(summary) {
     lines.push(`### 维度 ${dim.field}（按该字段取值分组）`);
     for (const g of dim.groups) {
       lines.push(`- ${g.field}=${g.key}：${g.count}条（占比${g.percent}%）`);
-      if (g.versionDist && g.versionDist.length) {
-        lines.push(`  版本分布：${g.versionDist.map((v) => `${v.version} ${v.count}条`).join('、')}`);
-      }
       if (g.samples && g.samples.length) {
         g.samples.forEach((s, i) => {
           lines.push(`  样本${i + 1}：${JSON.stringify(s)}`);

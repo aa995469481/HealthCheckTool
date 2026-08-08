@@ -176,14 +176,6 @@
             <el-table-column prop="percent" label="占比" width="90">
               <template #default="{ row }">{{ row.percent }}%</template>
             </el-table-column>
-            <el-table-column label="版本分布" min-width="190">
-              <template #default="{ row }">
-                <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
-                  {{ v.version }} {{ v.count }}条
-                </el-tag>
-                <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
-              </template>
-            </el-table-column>
             <el-table-column label="代表样本" min-width="240">
               <template #default="{ row }">
                 <el-collapse>
