@@ -4,13 +4,21 @@
  * 对齐用户提供的大模型接口信息：
  *   - API 地址：config.endpoint（含 /chat/completions）
  *   - 认证：Authorization: Bearer <token>
- *   - 请求体：{ model, messages, temperature, max_tokens: null, stream: false }
+ *   - 请求体：{ model, messages, temperature, stream: false }（与已验证成功的 curl 完全一致，不携带 max_tokens）
  *   - 超时：config.timeoutMs（默认 120s），走系统 curl.exe（与 ClickHouse 客户端一致，避免挂起）
  *   - 上下文控制：输入长度由调用方（report-generator.js）裁剪，模型超限返回 finish_reason=length 时明确报错
  */
 const { logger } = require('./logger');
 const aiConfig = require('./ai-config-store');
 const { curlJsonPost } = require('./clickhouse-client');
+const debugMode = require('./debug-mode');
+
+/** 脱敏 token：仅显示前 6 位与后 4 位，用于日志比对（确认页面配置的 token 是否正确） */
+function maskToken(t) {
+  const s = String(t || '');
+  if (s.length <= 12) return s.slice(0, 2) + '***';
+  return s.slice(0, 6) + '...' + s.slice(-4);
+}
 
 /**
  * 调用大模型（单轮对话）
@@ -23,34 +31,46 @@ async function callChat({ system, user } = {}) {
   if (!cfg.token || !cfg.token.trim()) {
     throw new Error('AI Token 未配置，请先在「AI 设置」中填写');
   }
+  const token = cfg.token.trim();
 
   const messages = [];
   if (system && String(system).trim()) messages.push({ role: 'system', content: String(system) });
   messages.push({ role: 'user', content: String(user) });
 
+  // 请求体完全对齐已验证成功的 curl 样例（不携带 max_tokens，避免网关差异）
   const body = {
     model: cfg.model || 'DeepSeek_V4_Flash_Client',
     messages,
     temperature: cfg.temperature !== undefined && cfg.temperature !== null ? cfg.temperature : 0.2,
-    max_tokens: null,
     stream: false
   };
 
   const timeoutMs = cfg.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : 120000;
   const startedAt = Date.now();
-  logger.info(`[llm] call model=${body.model} systemLen=${messages[0] ? messages[0].content.length : 0} userLen=${body.messages[body.messages.length - 1].content.length} timeoutMs=${timeoutMs}`);
+  logger.info(
+    `[llm] call model=${body.model} endpoint=${cfg.endpoint} token=${maskToken(token)} ` +
+    `systemLen=${messages[0] ? messages[0].content.length : 0} userLen=${body.messages[body.messages.length - 1].content.length} timeoutMs=${timeoutMs}`
+  );
 
   const headers = {
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${cfg.token.trim()}`
+    Authorization: `Bearer ${token}`
   };
+
+  if (debugMode.getDebugEnabled()) {
+    logger.info(`[llm] REQUEST BODY:\n${JSON.stringify(body, null, 2)}`);
+  }
 
   const res = await curlJsonPost(cfg.endpoint, headers, body, timeoutMs);
 
   if (res.status !== 200) {
     logger.error(`[llm] http ${res.status}`, String(res.body).slice(0, 2000));
     if (res.status === 401 || res.status === 403) {
-      throw new Error('大模型鉴权失败（HTTP ' + res.status + '），请检查 AI 设置中的 Token 是否正确');
+      const detail = String(res.body || '').slice(0, 300).trim();
+      throw new Error(
+        `大模型鉴权失败（HTTP ${res.status}）` + (detail ? `，服务端返回：${detail}` : '') +
+        '。请检查 AI 设置中的 Token 是否正确或已过期'
+      );
     }
     throw new Error(`大模型调用失败（HTTP ${res.status}）：${String(res.body).slice(0, 500)}`);
   }
