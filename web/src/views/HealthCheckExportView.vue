@@ -246,6 +246,36 @@
         日报基于最近一次执行巡检生成的聚类摘要，分场景多次调用大模型（每次输入控制在 {{ aiStatus.maxCharsPerPrompt || 12000 }} 字内）后汇总，输出三段式标准日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。
         「Mock 生成」不调用大模型，用于本地演示与测试。
       </div>
+
+      <!-- 人工矫正意见（全局生效，生成日报时喂给大模型参考） -->
+      <el-collapse class="ai-corrections">
+        <el-collapse-item :name="'corrections'">
+          <template #title>
+            <span class="ai-corrections-title">人工矫正意见</span>
+            <el-tag size="small" type="warning" class="ai-corrections-count">{{ corrections.length }} 条</el-tag>
+            <span class="ai-corrections-desc">生成日报时喂给大模型作为矫正/建议（全局生效）</span>
+          </template>
+          <div class="corrections-editor">
+            <el-input
+              v-model="correctionInput"
+              type="textarea"
+              :rows="3"
+              placeholder="输入矫正意见/建议，如：外码 1001 属于正常业务流程，不算问题；充值失败的主要根因在 XX 服务"
+            />
+            <div class="corrections-actions">
+              <el-button type="primary" size="small" :icon="Plus" @click="addCorrection">添加矫正意见</el-button>
+            </div>
+          </div>
+          <div v-if="corrections.length" class="corrections-list">
+            <div v-for="c in corrections" :key="c.id" class="correction-item">
+              <span class="correction-content">{{ c.content }}</span>
+              <el-button link type="danger" size="small" @click="removeCorrection(c)">删除</el-button>
+            </div>
+          </div>
+          <el-empty v-else description="暂无矫正意见" :image-size="48" />
+        </el-collapse-item>
+      </el-collapse>
+
       <div v-if="generating" class="ai-generating">
         <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" />
         <span>正在生成日报，可能需要数十秒到数分钟，请耐心等待…</span>
@@ -295,7 +325,7 @@
 <script setup>
 import { reactive, ref, computed, onMounted } from 'vue';
 import { ElMessage, ElNotification } from 'element-plus';
-import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay, Setting, MagicStick, Cpu } from '@element-plus/icons-vue';
+import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay, Setting, MagicStick, Cpu, Plus } from '@element-plus/icons-vue';
 
 const credential = reactive({ configured: false, expired: false, expiredAt: '', source: '', updatedAt: '' });
 const debugModeEnabled = ref(false);
@@ -320,6 +350,9 @@ const aiToken = ref('');
 const savingAi = ref(false);
 const aiReport = ref(null);
 const generating = ref(false);
+/* 人工矫正意见 */
+const corrections = ref([]);
+const correctionInput = ref('');
 /* 聚类摘要：展开的场景名列表，默认全部折叠 */
 const expandedScenes = ref([]);
 
@@ -755,6 +788,45 @@ function downloadReport() {
   ElMessage.success('日报 HTML 已开始下载');
 }
 
+/* ---------- 人工矫正意见 ---------- */
+async function loadCorrections() {
+  try {
+    const data = await request('/api/health-check/ai-corrections');
+    corrections.value = data.corrections || [];
+  } catch (e) {
+    ElMessage.error(e.message || '加载矫正意见失败');
+  }
+}
+
+async function addCorrection() {
+  const content = correctionInput.value.trim();
+  if (!content) {
+    ElMessage.warning('请先输入矫正意见');
+    return;
+  }
+  try {
+    await request('/api/health-check/ai-corrections', {
+      method: 'POST',
+      body: JSON.stringify({ content })
+    });
+    correctionInput.value = '';
+    ElMessage.success('矫正意见已添加');
+    loadCorrections();
+  } catch (e) {
+    ElMessage.error(e.message || '添加失败');
+  }
+}
+
+async function removeCorrection(c) {
+  try {
+    await request(`/api/health-check/ai-corrections/${c.id}`, { method: 'DELETE' });
+    ElMessage.success('已删除');
+    loadCorrections();
+  } catch (e) {
+    ElMessage.error(e.message || '删除失败');
+  }
+}
+
 onMounted(() => {
   loadCredentials();
   loadScenarios();
@@ -762,6 +834,7 @@ onMounted(() => {
   loadDebugMode();
   loadAnalysis();
   loadAiConfig();
+  loadCorrections();
 });
 </script>
 
@@ -971,6 +1044,56 @@ onMounted(() => {
   color: #909399;
   margin-bottom: 10px;
   line-height: 1.7;
+}
+.ai-corrections {
+  margin: 4px 0 12px;
+  border: none;
+}
+.ai-corrections :deep(.el-collapse-item__header) {
+  border-bottom: 1px solid #e4e7ed;
+}
+.ai-corrections-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin-right: 8px;
+}
+.ai-corrections-count {
+  margin-right: 8px;
+}
+.ai-corrections-desc {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 4px;
+}
+.corrections-editor {
+  padding: 4px 0;
+}
+.corrections-actions {
+  margin-top: 8px;
+}
+.corrections-list {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+}
+.correction-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: #fafafa;
+}
+.correction-content {
+  font-size: 13px;
+  color: #303133;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .ai-generating {
   padding: 24px 8px;

@@ -22,6 +22,7 @@ const path = require('path');
 const { logger } = require('./logger');
 const llm = require('./llm-service');
 const aiConfig = require('./ai-config-store');
+const correctionStore = require('./correction-store');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
 
@@ -245,6 +246,15 @@ async function generateDailyReport({ mock = false } = {}) {
     `- 各场景命中条数：${summaries.map((s, i) => `「${s.scenarioTitle || `场景${i + 1}`}」${s.total}条`).join('；')}`
   ].join('\n');
 
+  // 人工矫正意见（全局生效，喂给汇总调用，不重复出现在各场景分析 prompt）
+  const correctionsText = correctionStore.correctionsText();
+  const correctionBlock = correctionsText
+    ? `\n\n以下为巡检工程师提供的人工矫正意见与建议（务必在日报中参考并体现，用于修正分析与结论）：\n${correctionsText}\n`
+    : '';
+  const correctionHint = correctionsText
+    ? '\n\n注意：请结合上述人工矫正意见修正场景分析与整体结论，避免与人工判断冲突。'
+    : '';
+
   // 汇总输入控制：每场景分析限长，保证总输入不超过 maxChars（避免汇总调用超时）
   const perSceneBudget = Math.max(800, Math.floor((maxChars * 0.8) / sceneReports.length));
   const sceneSections = sceneReports.map((sr, i) => {
@@ -252,9 +262,9 @@ async function generateDailyReport({ mock = false } = {}) {
     return `### 场景 ${i + 1}：${sr.title}\n${clipped}`;
   }).join('\n\n');
 
-  const reportUser = `本次巡检概况：\n${overviewLines}\n\n以下是各场景的问题分析结果：\n\n${sceneSections}\n\n请据此生成完整的三段式巡检日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。`;
+  const reportUser = `本次巡检概况：\n${overviewLines}${correctionBlock}\n\n以下是各场景的问题分析结果：\n\n${sceneSections}\n\n请据此生成完整的三段式巡检日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。${correctionHint}`;
 
-  logger.info(`[ai-report] final call inputChars=${reportUser.length} perSceneBudget=${perSceneBudget}`);
+  logger.info(`[ai-report] final call inputChars=${reportUser.length} perSceneBudget=${perSceneBudget} corrections=${correctionsText ? correctionsText.split('\n').length : 0}`);
   let markdown;
   if (mock) {
     const mockSections = sceneReports.map((sr, i) => `### 场景 ${i + 1}：${sr.title}\n\n${sr.content}`).join('\n\n');
@@ -273,6 +283,9 @@ async function generateDailyReport({ mock = false } = {}) {
       '本次巡检各场景整体健康度中等，主要问题集中在主错误码相关路径，建议：1) 优先核查主错误码对应链路；2) 按版本分布定位引入版本；3) 次日巡检验证处置效果。',
       ''
     ].join('\n');
+    if (correctionsText) {
+      markdown += `\n## 附：人工矫正意见\n${correctionsText}\n`;
+    }
   } else {
     const r = await llm.callChat({ system: REPORT_SYSTEM, user: reportUser });
     markdown = r.content;

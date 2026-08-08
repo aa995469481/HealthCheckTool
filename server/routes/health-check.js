@@ -25,6 +25,7 @@ const excelExport = require('../lib/excel-export');
 const clusterSummary = require('../lib/cluster-summary');
 const aiConfig = require('../lib/ai-config-store');
 const reportGenerator = require('../lib/report-generator');
+const correctionStore = require('../lib/correction-store');
 
 const router = express.Router();
 
@@ -377,6 +378,32 @@ router.post('/ai-report', async (req, res) => {
     logger.error('[ai-report] failed', e);
     res.json({ code: 1, msg: e.message || '生成日报失败' });
   }
+});
+
+/* ---------- 9.1 人工矫正意见：列表 ---------- */
+router.get('/ai-corrections', (req, res) => {
+  const list = correctionStore.listCorrections();
+  logger.info(`[corrections] list -> ${list.length}`);
+  res.json({ code: 0, msg: 'ok', data: { corrections: list } });
+});
+
+/* ---------- 9.2 人工矫正意见：新增 ---------- */
+router.post('/ai-corrections', (req, res) => {
+  const { content } = req.body || {};
+  try {
+    const item = correctionStore.addCorrection(content);
+    res.json({ code: 0, msg: 'ok', data: item });
+  } catch (e) {
+    logger.warn(`[corrections] add failed: ${e.message}`);
+    res.json({ code: 1, msg: e.message || '保存矫正意见失败' });
+  }
+});
+
+/* ---------- 9.3 人工矫正意见：删除 ---------- */
+router.delete('/ai-corrections/:id', (req, res) => {
+  const ok = correctionStore.deleteCorrection(req.params.id);
+  if (!ok) return res.json({ code: 1, msg: '矫正意见不存在' });
+  res.json({ code: 0, msg: 'ok' });
 });
 
 module.exports = router;
