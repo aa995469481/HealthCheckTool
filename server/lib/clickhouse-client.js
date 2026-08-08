@@ -64,6 +64,8 @@ function httpJsonPost(urlStr, headers, bodyObj, timeoutMs) {
   return new Promise((resolve, reject) => {
     let req;
     let receivedBytes = 0;
+    let resolved = false;
+    const stage = { dns: '-', tcp: '-', tls: '-', headers: '-' };
     try {
       const url = new URL(urlStr);
       const payload = JSON.stringify(bodyObj);
@@ -76,6 +78,7 @@ function httpJsonPost(urlStr, headers, bodyObj, timeoutMs) {
         url,
         { method: 'POST', headers: h, timeout: timeoutMs },
         (res) => {
+          stage.headers = 'yes';
           let body = '';
           res.setEncoding('utf-8');
           res.on('data', (c) => {
@@ -89,29 +92,49 @@ function httpJsonPost(urlStr, headers, bodyObj, timeoutMs) {
           res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
         }
       );
+      req.on('socket', (socket) => {
+        socket.on('lookup', () => (stage.dns = 'yes'));
+        socket.on('connect', () => (stage.tcp = 'yes'));
+        socket.on('secureConnect', () => (stage.tls = 'yes'));
+      });
     } catch (e) {
       return reject(e);
     }
     req.on('timeout', () => {
-      // 记录已接收字节数，便于判断服务器是否在响应中
-      req.destroy(new Error(`request timeout after ${timeoutMs}ms, receivedBytes=${receivedBytes}`));
+      resolved = true;
+      // 记录连接阶段与已接收字节数，判断卡在 DNS/TCP/TLS 还是服务器挂起
+      req.destroy(
+        new Error(
+          `request timeout after ${timeoutMs}ms, receivedBytes=${receivedBytes}, stage={dns:${stage.dns}, tcp:${stage.tcp}, tls:${stage.tls}, headers:${stage.headers}}`
+        )
+      );
     });
-    req.on('error', (e) => reject(e));
+    req.on('error', (e) => {
+      if (!resolved) reject(e);
+    });
     req.end();
   });
 }
 
-/** 构建固定请求头（cookie / csrf 动态注入，其余对齐 curl） */
+/** 构建固定请求头（cookie / csrf 动态注入，其余完全对齐用户提供的 curl） */
 function buildRequestHeaders(cookie, csrfToken) {
   const headers = {
     accept: 'application/json, text/plain, */*',
     'accept-language': 'zh-CN,zh;q=0.9',
+    'content-type': 'application/json',
     origin: 'https://console-drcn.wisedevops.huawei.com',
+    priority: 'u=1, i',
     referer: 'https://console-drcn.wisedevops.huawei.com/microApp/serviceInsight/aiops5Logservice',
-    'user-agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+    'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
     service: 'com.huawei.wisecloudvirtualcardmgmtservice',
     'serviceinsight-console-service': 'com.huawei.wisecloudvirtualcardmgmtservice',
+    'user-agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
     'x-wisecloud-application-id': 'com.huawei.wallet',
     'x-wisecloud-language-code': 'zh-cn',
     'x-wisecloud-route': 'cn_product_default',
