@@ -222,6 +222,7 @@ function parseAndValidate(urlStr, bodyStr) {
     orderType: String(orderType),
     focusFields,
     clusterFields,
+    clusterSubFields: {},
     filterCondition,
     createdAt: null
   };

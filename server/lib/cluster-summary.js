@@ -5,7 +5,7 @@
  *   - 聚类字段 clusterFields 由用户在场景管理中多选（默认内码 + 外码）
  *   - 每个字段都是独立的 1 级分析维度，各自按字段取值分组统计（并列展示，互不级联）
  *   - 字段排列顺序仅决定展示顺序，无层级含义
- *   - 每个维度统计：分组条数/占比
+ *   - 每个维度统计：分组条数/占比、版本分布（_app_ver）
  *   - Top K：每个维度仅保留条数最多的前 7 个分组，其余并入「其他」只列总条数与组数
  *   - 小聚类：每个维度内，占比 < 1% 且条数 < 5 的分组同样并入「其他」
  *   - 代表样本：每个维度每组抽取 2 条（信息全 + 覆盖不同版本/时段）
@@ -72,6 +72,17 @@ function richness(record, fields) {
 
 /* ---------- 统计工具 ---------- */
 
+function calcVersionDist(records, versionField) {
+  const map = new Map();
+  for (const r of records) {
+    const v = fieldValue(r, versionField) || '未知';
+    map.set(v, (map.get(v) || 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([version, count]) => ({ version, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
 function pickSamples(records, focusFields, versionField) {
   const candidates = records.slice().sort((a, b) => richness(b, focusFields) - richness(a, focusFields));
   if (candidates.length === 0) return [];
@@ -108,8 +119,12 @@ function buildClusterSummary(scene, records) {
   const total = Array.isArray(records) ? records.length : 0;
   const allRecords = records || [];
 
-  // 对单个字段做一级分组统计
-  function buildDimension(field) {
+  // 对单个字段做一级分组统计，可带二级下钻字段
+  function buildDimension(field, subField) {
+    // 每个维度仅保留条数 Top 7，其余并入其他
+    const TOP_K = 7;
+    const SMALL_PERCENT = 1;
+    const SMALL_COUNT = 5;
     const groupMap = new Map();
     for (const r of allRecords) {
       const key = fieldValue(r, field) || '';
@@ -121,21 +136,47 @@ function buildClusterSummary(scene, records) {
     for (const [key, subList] of groupMap.entries()) {
       const count = subList.length;
       const percent = total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0;
-      raw.push({
+      const node = {
         nodeKey: `${field}=${key}`,
         key: key === '' ? '(空)' : key,
         field,
         count,
         percent,
+        versionDist: calcVersionDist(subList, versionField),
         samples: pickSamples(subList, focusFields, versionField)
-      });
+      };
+      // 二级下钻：一级分组内再按 subField 细分
+      if (subField) {
+        const subMap = new Map();
+        for (const r of subList) {
+          const k2 = fieldValue(r, subField) || '';
+          if (!subMap.has(k2)) subMap.set(k2, []);
+          subMap.get(k2).push(r);
+        }
+        const subRaw = [];
+        for (const [k2, subSubList] of subMap.entries()) {
+          const c2 = subSubList.length;
+          subRaw.push({
+            nodeKey: `${field}=${key}|${subField}=${k2}`,
+            key: k2 === '' ? '(空)' : k2,
+            field: subField,
+            count: c2,
+            percent: count > 0 ? Number(((c2 / count) * 100).toFixed(1)) : 0,
+            versionDist: calcVersionDist(subSubList, versionField),
+            samples: pickSamples(subSubList, focusFields, versionField)
+          });
+        }
+        subRaw.sort((a, b) => b.count - a.count);
+        // 二级同样仅保留 Top 7（nodeKey 保留，供树形表格 row-key 使用）
+        node.children = subRaw.slice(0, TOP_K);
+        if (subRaw.length > TOP_K) {
+          node.subOthersCount = subRaw.slice(TOP_K).reduce((sum, s) => sum + s.count, 0);
+        }
+      }
+      raw.push(node);
     }
 
     // 小聚类合并（占比 < 1% 且条数 < 5 -> 其他）
-    const SMALL_PERCENT = 1;
-    const SMALL_COUNT = 5;
-    // 每个维度仅保留条数 Top 7，其余并入其他
-    const TOP_K = 7;
     const sorted = raw.slice().sort((a, b) => b.count - a.count);
     const groups = [];
     let othersCount = 0;
@@ -161,7 +202,12 @@ function buildClusterSummary(scene, records) {
     };
   }
 
-  const dimensions = clusterFields.map(buildDimension);
+  const dimensions = clusterFields.map((field) => {
+    const subField = (scene && scene.clusterSubFields && scene.clusterSubFields[field]) || null;
+    const dim = buildDimension(field, subField);
+    dim.subField = subField;
+    return dim;
+  });
 
   const summary = {
     scenarioTitle: scene && scene.title ? scene.title : '',
@@ -187,10 +233,28 @@ function toMarkdown(summary) {
   lines.push('');
 
   for (const dim of summary.dimensions) {
-    lines.push(`### 维度 ${dim.field}（按该字段取值分组）`);
+    lines.push(`### 维度 ${dim.field}（按该字段取值分组）` + (dim.subField ? `，二级下钻字段：${dim.subField}` : ''));
     for (const g of dim.groups) {
       lines.push(`- ${g.field}=${g.key}：${g.count}条（占比${g.percent}%）`);
-      if (g.samples && g.samples.length) {
+      if (g.versionDist && g.versionDist.length) {
+        lines.push(`  版本分布：${g.versionDist.map((v) => `${v.version} ${v.count}条`).join('、')}`);
+      }
+      // 二级分组
+      if (g.children && g.children.length) {
+        lines.push(`  二级细分（${g.children.length} 组）：`);
+        for (const sub of g.children) {
+          lines.push(`    - ${sub.field}=${sub.key}：${sub.count}条（占一级${sub.percent}%）`);
+          if (sub.versionDist && sub.versionDist.length) {
+            lines.push(`      版本分布：${sub.versionDist.map((v) => `${v.version} ${v.count}条`).join('、')}`);
+          }
+          if (sub.samples && sub.samples.length) {
+            sub.samples.forEach((s, i) => {
+              lines.push(`      样本${i + 1}：${JSON.stringify(s)}`);
+            });
+          }
+        }
+      }
+      if (g.samples && g.samples.length && !g.children) {
         g.samples.forEach((s, i) => {
           lines.push(`  样本${i + 1}：${JSON.stringify(s)}`);
         });

@@ -164,17 +164,37 @@
         <div v-for="dim in (s.dimensions || [])" :key="dim.field" class="cluster-dim">
           <div class="cluster-dim-title">
             维度「{{ dim.field }}」按字段取值分组（Top 7）
+            <el-tag v-if="dim.subField" size="small" type="info">二级下钻：{{ dim.subField }}</el-tag>
             <el-tag v-if="dim.others" size="small" type="warning">其他 {{ dim.others.groups }} 组共 {{ dim.others.count }} 条</el-tag>
           </div>
-          <el-table :data="dim.groups" border size="small" class="cluster-table">
-            <el-table-column label="取值" min-width="160">
+          <el-table
+            :data="dim.groups"
+            row-key="nodeKey"
+            :tree-props="{ children: 'children' }"
+            border
+            size="small"
+            class="cluster-table"
+            default-expand-all
+          >
+            <el-table-column label="取值" min-width="180">
               <template #default="{ row }">
+                <span class="tree-level-tag" v-if="row.children">一级</span>
+                <span class="tree-level-tag sub" v-else-if="dim.subField">二级</span>
                 <el-tag size="small" type="primary">{{ row.key }}</el-tag>
+                <span v-if="row.subOthersCount" class="cell-more">另 {{ row.subOthersCount }} 条超 Top7</span>
               </template>
             </el-table-column>
             <el-table-column prop="count" label="条数" width="80" />
-            <el-table-column prop="percent" label="占比" width="90">
+            <el-table-column prop="percent" label="占比" width="100">
               <template #default="{ row }">{{ row.percent }}%</template>
+            </el-table-column>
+            <el-table-column label="版本分布" min-width="190">
+              <template #default="{ row }">
+                <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
+                  {{ v.version }} {{ v.count }}条
+                </el-tag>
+                <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
+              </template>
             </el-table-column>
             <el-table-column label="代表样本" min-width="240">
               <template #default="{ row }">
@@ -665,6 +685,19 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.tree-level-tag {
+  display: inline-block;
+  font-size: 11px;
+  color: #e6a23c;
+  border: 1px solid #e6a23c;
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 6px;
+}
+.tree-level-tag.sub {
+  color: #909399;
+  border-color: #c0c4cc;
 }
 .cluster-scene-title {
   display: flex;

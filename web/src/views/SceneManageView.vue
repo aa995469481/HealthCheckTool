@@ -116,6 +116,24 @@
               <div class="focus-hint" style="margin-top: 6px">
                 可多选，每个字段都是独立的 1 级分析维度（按字段取值分别分组，并列展示，互不级联）；勾选/取消即启用/停用该维度
               </div>
+
+              <!-- 二级聚类配置：每个一级维度可配置一个二级下钻字段 -->
+              <template v-if="sceneDraft.clusterFields.length">
+                <div class="sub-cluster-title">二级聚类下钻（可选，每个一级维度配置一个）</div>
+                <div v-for="f in sceneDraft.clusterFields" :key="f" class="sub-cluster-row">
+                  <el-tag size="small" type="warning" effect="plain" class="sub-cluster-level">{{ f }}</el-tag>
+                  <el-select
+                    :model-value="sceneDraft.clusterSubFields[f] || ''"
+                    placeholder="选择二级字段（可选）"
+                    size="small"
+                    clearable
+                    style="width: 240px"
+                    @change="(v) => onSubFieldChange(f, v)"
+                  >
+                    <el-option v-for="sf in subFieldOptions(f)" :key="sf" :label="sf" :value="sf" />
+                  </el-select>
+                </div>
+              </template>
             </div>
           </el-form-item>
         </el-form>
@@ -159,11 +177,18 @@
             <el-tag v-for="(f, i) in (row.focusFields || [])" :key="i" size="small" type="success" effect="plain">{{ f }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="聚类维度" min-width="160">
+        <el-table-column label="聚类维度" min-width="170">
           <template #default="{ row }">
             <div v-if="(row.clusterFields || []).length">
-              <el-tag v-for="f in row.clusterFields" :key="f" size="small" type="warning" effect="plain">
-                {{ f }}
+              <el-tag
+                v-for="f in row.clusterFields"
+                :key="f"
+                size="small"
+                type="warning"
+                effect="plain"
+                class="scene-cluster-tag"
+              >
+                {{ f }}<span v-if="row.clusterSubFields && row.clusterSubFields[f]" class="scene-cluster-sub">↓{{ row.clusterSubFields[f] }}</span>
               </el-tag>
             </div>
             <span v-else class="text-muted">默认(内码+外码)</span>
@@ -247,6 +272,7 @@ async function parseScene() {
         focus.find((f) => /ExtCode/i.test(f)) || 'walletEventExtCode'
       ];
     }
+    if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
     warnings.value = data.warnings || [];
     ElMessage.success('解析成功，请确认场景信息后保存');
   } catch (e) {
@@ -312,6 +338,18 @@ function addFocusField() {
   }
   focusInput.value = '';
   focusInputVisible.value = false;
+}
+
+/** 一级维度可选二级字段：关注字段中排除自身及已选的其他一级维度 */
+function subFieldOptions(f) {
+  const focus = sceneDraft.value.focusFields || [];
+  return focus.filter((sf) => sf !== f && !sceneDraft.value.clusterFields.includes(sf));
+}
+
+function onSubFieldChange(f, v) {
+  if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
+  if (v) sceneDraft.value.clusterSubFields[f] = v;
+  else delete sceneDraft.value.clusterSubFields[f];
 }
 
 onMounted(loadScenes);
@@ -383,6 +421,30 @@ onMounted(loadScenes);
 }
 .cluster-check-item {
   margin-right: 0;
+}
+.sub-cluster-title {
+  font-size: 12px;
+  color: #606266;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+.sub-cluster-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.sub-cluster-level {
+  min-width: 130px;
+  font-family: Consolas, monospace;
+}
+.scene-cluster-tag {
+  margin: 2px 4px 2px 0;
+}
+.scene-cluster-sub {
+  font-size: 11px;
+  color: #409eff;
+  margin-left: 4px;
 }
 .text-muted {
   font-size: 12px;
