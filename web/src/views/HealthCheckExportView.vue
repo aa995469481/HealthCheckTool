@@ -10,6 +10,7 @@
               <span class="debug-toggle-label">详细日志模式</span>
               <el-switch v-model="debugModeEnabled" size="small" @change="toggleDebugMode" />
             </div>
+            <el-button size="small" :icon="Setting" @click="openAiConfig">AI 设置</el-button>
             <el-button size="small" type="primary" :icon="Connection" :loading="loggingIn" @click="wiseLogin">
               Wise 登录
             </el-button>
@@ -213,13 +214,84 @@
         </div>
       </div>
     </el-card>
+
+    <!-- AI 巡检日报卡片 -->
+    <el-card shadow="never" class="card">
+      <template #header>
+        <div class="card-header">
+          <span>AI 巡检日报</span>
+          <div class="card-actions">
+            <el-tag v-if="aiStatus.hasToken" size="small" type="success">Token 已配置</el-tag>
+            <el-tag v-else size="small" type="danger">Token 未配置</el-tag>
+            <el-tag v-if="aiStatus.model" size="small" type="info">{{ aiStatus.model }}</el-tag>
+            <el-button size="small" :icon="MagicStick" :loading="generating" @click="generateReport(false)">
+              生成日报
+            </el-button>
+            <el-button size="small" :icon="Cpu" :loading="generating" @click="generateReport(true)">Mock 生成</el-button>
+            <el-button
+              v-if="aiReport"
+              size="small"
+              type="primary"
+              :icon="Download"
+              @click="downloadReport"
+            >下载 HTML</el-button>
+          </div>
+        </div>
+      </template>
+      <div class="ai-report-hint">
+        日报基于最近一次执行巡检生成的聚类摘要，分场景多次调用大模型（每次输入控制在 {{ aiStatus.maxCharsPerPrompt || 12000 }} 字内）后汇总，输出三段式标准日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。
+        「Mock 生成」不调用大模型，用于本地演示与测试。
+      </div>
+      <div v-if="generating" class="ai-generating">
+        <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" />
+        <span>正在生成日报，可能需要数十秒到数分钟，请耐心等待…</span>
+      </div>
+      <div v-else-if="aiReport" class="ai-report-wrap">
+        <iframe class="ai-report-frame" :srcdoc="aiReport.html" title="巡检日报" />
+      </div>
+      <el-empty v-else description="尚未生成日报，请先执行巡检（生成聚类摘要），再点击「生成日报」" :image-size="80" />
+    </el-card>
+
+    <!-- AI 设置对话框 -->
+    <el-dialog v-model="aiDialogVisible" title="AI 大模型设置" width="560px" @closed="resetAiForm">
+      <el-form label-width="110px">
+        <el-form-item label="API 地址">
+          <el-input v-model="aiForm.endpoint" placeholder="https://.../v1/chat/completions" />
+        </el-form-item>
+        <el-form-item label="Token">
+          <el-input v-model="aiToken" type="password" show-password placeholder="Bearer Token（sk-...），留空表示不修改" />
+          <div class="ai-form-tip">
+            已配置：{{ aiStatus.hasToken ? '是' : '否' }}
+            <el-button v-if="aiStatus.hasToken" link type="danger" size="small" @click="clearAiToken">清除 Token</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="模型名称">
+          <el-input v-model="aiForm.model" placeholder="如 DeepSeek_V4_Flash_Client" />
+        </el-form-item>
+        <el-form-item label="temperature">
+          <el-input-number v-model="aiForm.temperature" :min="0" :max="2" :step="0.1" />
+        </el-form-item>
+        <el-form-item label="单次输入上限">
+          <el-input-number v-model="aiForm.maxCharsPerPrompt" :min="1000" :max="100000" :step="1000" />
+          <span class="ai-form-tip">字符（超出自动裁剪，默认 12000）</span>
+        </el-form-item>
+        <el-form-item label="超时时间">
+          <el-input-number v-model="aiForm.timeoutMs" :min="30000" :max="600000" :step="10000" />
+          <span class="ai-form-tip">毫秒（默认 120000）</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="aiDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingAi" @click="saveAiConfig">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { reactive, ref, computed, onMounted } from 'vue';
 import { ElMessage, ElNotification } from 'element-plus';
-import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay } from '@element-plus/icons-vue';
+import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay, Setting, MagicStick, Cpu } from '@element-plus/icons-vue';
 
 const credential = reactive({ configured: false, expired: false, expiredAt: '', source: '', updatedAt: '' });
 const debugModeEnabled = ref(false);
@@ -235,6 +307,15 @@ const analysis = ref(null);
 const requestBodyText = ref('');
 const debugRunning = ref(false);
 const debugResultText = ref('');
+
+/* AI 巡检日报 */
+const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPerPrompt: 12000, temperature: 0.2, timeoutMs: 120000 });
+const aiDialogVisible = ref(false);
+const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 120000 });
+const aiToken = ref('');
+const savingAi = ref(false);
+const aiReport = ref(null);
+const generating = ref(false);
 
 const plan = reactive({
   name: '',
@@ -555,12 +636,125 @@ async function runDebugQuery() {
   }
 }
 
+async function loadAiConfig() {
+  try {
+    const data = await request('/api/health-check/ai-config');
+    aiStatus.hasToken = !!data.hasToken;
+    aiStatus.model = data.model || '';
+    aiStatus.endpoint = data.endpoint || '';
+    aiStatus.maxCharsPerPrompt = data.maxCharsPerPrompt || 12000;
+    aiStatus.temperature = data.temperature !== undefined ? data.temperature : 0.2;
+    aiStatus.timeoutMs = data.timeoutMs || 120000;
+  } catch (e) {
+    ElMessage.error(e.message || '加载 AI 配置失败');
+  }
+}
+
+function openAiConfig() {
+  aiForm.endpoint = aiStatus.endpoint;
+  aiForm.model = aiStatus.model;
+  aiForm.temperature = aiStatus.temperature;
+  aiForm.maxCharsPerPrompt = aiStatus.maxCharsPerPrompt;
+  aiForm.timeoutMs = aiStatus.timeoutMs;
+  aiToken.value = '';
+  aiDialogVisible.value = true;
+}
+
+function resetAiForm() {
+  aiToken.value = '';
+}
+
+async function saveAiConfig() {
+  savingAi.value = true;
+  try {
+    const data = await request('/api/health-check/ai-config', {
+      method: 'POST',
+      body: JSON.stringify({
+        endpoint: aiForm.endpoint,
+        model: aiForm.model,
+        temperature: aiForm.temperature,
+        maxCharsPerPrompt: aiForm.maxCharsPerPrompt,
+        timeoutMs: aiForm.timeoutMs,
+        token: aiToken.value.trim() || undefined
+      })
+    });
+    aiStatus.hasToken = !!data.hasToken;
+    aiStatus.model = data.model || '';
+    aiStatus.endpoint = data.endpoint || '';
+    aiStatus.maxCharsPerPrompt = data.maxCharsPerPrompt || 12000;
+    aiStatus.temperature = data.temperature !== undefined ? data.temperature : 0.2;
+    aiStatus.timeoutMs = data.timeoutMs || 120000;
+    aiDialogVisible.value = false;
+    ElMessage.success(aiToken.value.trim() ? 'AI 配置已保存（Token 已更新）' : 'AI 配置已保存');
+  } catch (e) {
+    ElMessage.error(e.message || '保存 AI 配置失败');
+  } finally {
+    savingAi.value = false;
+  }
+}
+
+async function clearAiToken() {
+  try {
+    await request('/api/health-check/ai-config', {
+      method: 'POST',
+      body: JSON.stringify({ __clearToken: true })
+    });
+    aiStatus.hasToken = false;
+    aiToken.value = '';
+    ElMessage.success('Token 已清除');
+  } catch (e) {
+    ElMessage.error(e.message || '清除 Token 失败');
+  }
+}
+
+async function generateReport(mock) {
+  if (!mock && !aiStatus.hasToken) {
+    ElMessage.warning('AI Token 未配置，请先点击「AI 设置」填写 Token（或使用 Mock 生成）');
+    return;
+  }
+  if (!analysis.value) {
+    ElMessage.warning('暂无聚类摘要，请先执行巡检');
+    return;
+  }
+  generating.value = true;
+  aiReport.value = null;
+  try {
+    ElMessage({ message: '正在调用大模型生成日报，可能需要数十秒到数分钟，请耐心等待…', type: 'info', duration: 5000, showClose: true });
+    const data = await request('/api/health-check/ai-report', {
+      method: 'POST',
+      body: JSON.stringify({ mock })
+    });
+    aiReport.value = data;
+    ElMessage.success(mock ? 'Mock 日报已生成' : '日报生成完成');
+  } catch (e) {
+    ElMessage.error(e.message || '生成日报失败');
+  } finally {
+    generating.value = false;
+  }
+}
+
+function downloadReport() {
+  if (!aiReport.value || !aiReport.value.html) return;
+  const stamp = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([aiReport.value.html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `巡检日报-${stamp}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  ElMessage.success('日报 HTML 已开始下载');
+}
+
 onMounted(() => {
   loadCredentials();
   loadScenarios();
   loadProfiles();
   loadDebugMode();
   loadAnalysis();
+  loadAiConfig();
 });
 </script>
 
@@ -754,5 +948,38 @@ onMounted(() => {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.ai-report-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 10px;
+  line-height: 1.7;
+}
+.ai-generating {
+  padding: 24px 8px;
+  text-align: center;
+  color: #909399;
+  font-size: 13px;
+}
+.ai-generating span {
+  display: block;
+  margin-top: 10px;
+}
+.ai-report-wrap {
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ai-report-frame {
+  width: 100%;
+  height: 640px;
+  border: none;
+  display: block;
+  background: #fff;
+}
+.ai-form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 8px;
 }
 </style>

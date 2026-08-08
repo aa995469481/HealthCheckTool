@@ -311,6 +311,7 @@ async function queryWithTotal(params = {}) {
 module.exports = {
   QUERY_URL,
   PAGE_SIZE,
+  curlJsonPost,
   buildRequestBody,
   buildRequestHeaders,
   queryOnce,

@@ -23,6 +23,8 @@ const sceneStore = require('../lib/scene-store');
 const debugMode = require('../lib/debug-mode');
 const excelExport = require('../lib/excel-export');
 const clusterSummary = require('../lib/cluster-summary');
+const aiConfig = require('../lib/ai-config-store');
+const reportGenerator = require('../lib/report-generator');
 
 const router = express.Router();
 
@@ -339,6 +341,42 @@ router.get('/cache/:id', (req, res) => {
   const data = getCache(req.params.id);
   if (!data) return res.json({ code: 1, msg: '缓存不存在或已过期' });
   res.json({ code: 0, msg: 'ok', data });
+});
+
+/* ---------- 8. AI 设置：读取配置（token 不返回明文） ---------- */
+router.get('/ai-config', (req, res) => {
+  const status = aiConfig.getSafeStatus();
+  logger.info(`[ai-config] get -> endpoint=${status.endpoint} model=${status.model} hasToken=${status.hasToken}`);
+  res.json({ code: 0, msg: 'ok', data: status });
+});
+
+/* ---------- 8.1 AI 设置：保存配置 ---------- */
+router.post('/ai-config', (req, res) => {
+  const { endpoint, token, model, temperature, maxCharsPerPrompt, timeoutMs, __clearToken } = req.body || {};
+  const patch = {};
+  if (endpoint !== undefined) patch.endpoint = String(endpoint).trim();
+  if (model !== undefined) patch.model = String(model).trim();
+  if (temperature !== undefined) patch.temperature = Number(temperature);
+  if (maxCharsPerPrompt !== undefined) patch.maxCharsPerPrompt = Number(maxCharsPerPrompt);
+  if (timeoutMs !== undefined) patch.timeoutMs = Number(timeoutMs);
+  if (token !== undefined) patch.token = String(token).trim();
+  if (__clearToken === true) patch.__clearToken = true;
+  const status = aiConfig.saveConfig(patch);
+  logger.info(`[ai-config] save -> endpoint=${status.endpoint} model=${status.model} hasToken=${status.hasToken}`);
+  res.json({ code: 0, msg: 'ok', data: status });
+});
+
+/* ---------- 9. 生成 AI 巡检日报（分场景调用大模型，输出三段式 HTML） ---------- */
+router.post('/ai-report', async (req, res) => {
+  const { mock } = req.body || {};
+  try {
+    logger.info(`[ai-report] request received mock=${!!mock}`);
+    const result = await reportGenerator.generateDailyReport({ mock: mock === true });
+    res.json({ code: 0, msg: 'ok', data: result });
+  } catch (e) {
+    logger.error('[ai-report] failed', e);
+    res.json({ code: 1, msg: e.message || '生成日报失败' });
+  }
 });
 
 module.exports = router;

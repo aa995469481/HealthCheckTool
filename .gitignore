@@ -5,3 +5,4 @@ dist/
 
 # 敏感凭据，禁止推送
 server/data/secrets.yaml
+server/data/ai-config.json
