@@ -146,8 +146,13 @@ async function loginAndFetchCredentials() {
   }
   const cookie = cookieToString(cookies);
 
+  // 先移除监听器再关闭浏览器（puppeteer v23 用 off，removeListener 不存在）
+  try {
+    if (page && typeof page.off === 'function') page.off('request', csrfListener);
+  } catch (e) {
+    logger.warn('[credential] remove csrf listener failed', e.message);
+  }
   await browser.close().catch(() => {});
-  page.removeListener('request', csrfListener);
 
   logger.info(
     `[credential] login done cookieLen=${cookie.length} cookieCount=${cookies.length} csrfLen=${csrfToken.length}`
