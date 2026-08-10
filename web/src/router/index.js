@@ -22,6 +22,12 @@ const routes = [
     name: 'SceneManage',
     component: () => import('../views/SceneManageView.vue'),
     meta: { title: '巡检场景管理' }
+  },
+  {
+    path: '/failure-library',
+    name: 'FailureLibrary',
+    component: () => import('../views/FailureLibraryView.vue'),
+    meta: { title: '巡检失败场景库' }
   }
 ];
 

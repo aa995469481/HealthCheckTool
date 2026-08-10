@@ -28,6 +28,7 @@ const reportGenerator = require('../lib/report-generator');
 const correctionStore = require('../lib/correction-store');
 const emlExport = require('../lib/eml-export');
 const emailConfigStore = require('../lib/email-config-store');
+const failureLibrary = require('../lib/failure-library-store');
 
 const router = express.Router();
 
@@ -216,6 +217,9 @@ router.post('/export-json', async (req, res) => {
       });
       queryResults.set(id, q);
       logger.info(`[export] scenario=${id} done total=${q.total} fetched=${q.records.length} pages=${q.pages}`);
+      // 自动更新失败场景库命中数（该场景下内码+外码组合本次巡检命中条数）
+      const hitUpdated = failureLibrary.updateHitCounts(scene, q.records);
+      if (hitUpdated > 0) logger.info(`[export] failure-library hits updated=${hitUpdated} scenario=${id}`);
     }
 
     if (queryResults.size === 0) {
@@ -457,6 +461,57 @@ router.post('/ai-report-eml', (req, res) => {
   } catch (e) {
     logger.error('[ai-report-eml] failed', e);
     res.json({ code: 1, msg: '生成邮件失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 12. 巡检失败场景库：列表 ---------- */
+router.get('/failure-library', (req, res) => {
+  const items = failureLibrary.list();
+  logger.info(`[failure-library] list -> ${items.length}`);
+  res.json({ code: 0, msg: 'ok', data: { items } });
+});
+
+/* ---------- 12.1 巡检失败场景库：新增 ---------- */
+router.post('/failure-library', (req, res) => {
+  const { sceneId, sceneTitle, inCode, extCode, analysis } = req.body || {};
+  try {
+    const item = failureLibrary.add({ sceneId, sceneTitle, inCode, extCode, analysis });
+    res.json({ code: 0, msg: 'ok', data: item });
+  } catch (e) {
+    logger.warn(`[failure-library] add failed: ${e.message}`);
+    res.json({ code: 1, msg: e.message || '新增失败' });
+  }
+});
+
+/* ---------- 12.2 巡检失败场景库：更新 ---------- */
+router.put('/failure-library/:id', (req, res) => {
+  const item = failureLibrary.update(req.params.id, req.body || {});
+  if (!item) return res.json({ code: 1, msg: '案例不存在' });
+  res.json({ code: 0, msg: 'ok', data: item });
+});
+
+/* ---------- 12.3 巡检失败场景库：删除 ---------- */
+router.delete('/failure-library/:id', (req, res) => {
+  const ok = failureLibrary.remove(req.params.id);
+  if (!ok) return res.json({ code: 1, msg: '案例不存在' });
+  res.json({ code: 0, msg: 'ok' });
+});
+
+/* ---------- 12.4 巡检失败场景库：从最新聚类摘要一键导入 ---------- */
+router.post('/failure-library/import', (req, res) => {
+  try {
+    const analysisFile = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
+    if (!fs.existsSync(analysisFile)) {
+      return res.json({ code: 1, msg: '暂无聚类摘要，请先执行巡检' });
+    }
+    const analysisData = JSON.parse(fs.readFileSync(analysisFile, 'utf-8'));
+    const scenes = sceneStore.listScenes();
+    const result = failureLibrary.importFromSummaries(analysisData.summaries || [], scenes);
+    logger.info(`[failure-library] import result=${JSON.stringify(result)}`);
+    res.json({ code: 0, msg: 'ok', data: result });
+  } catch (e) {
+    logger.error('[failure-library] import failed', e);
+    res.json({ code: 1, msg: '导入失败：' + (e.message || '未知错误') });
   }
 });
 

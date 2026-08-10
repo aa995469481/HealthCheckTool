@@ -6,10 +6,6 @@
         <div class="card-header">
           <span>凭据设置</span>
           <div class="card-actions">
-            <div class="debug-toggle">
-              <span class="debug-toggle-label">详细日志模式</span>
-              <el-switch v-model="debugModeEnabled" size="small" @change="toggleDebugMode" />
-            </div>
             <el-button size="small" :icon="Setting" @click="openAiConfig">AI 设置</el-button>
             <el-button size="small" type="primary" :icon="Connection" :loading="loggingIn" @click="wiseLogin">
               Wise 登录
@@ -109,32 +105,6 @@
           执行巡检并下载 Excel
         </el-button>
         <span class="selected-count">已选 {{ plan.enabled_scenarios.length }} 个场景</span>
-      </div>
-    </el-card>
-
-    <!-- 调试面板：展示当前将发送的完整请求体 -->
-    <el-card shadow="never" class="card">
-      <template #header>
-        <div class="card-header">
-          <span>调试：请求体预览</span>
-          <div class="card-actions">
-            <el-button size="small" :icon="Search" @click="previewRequestBody">生成请求体</el-button>
-            <el-button size="small" :icon="CopyDocument" @click="copyRequestBody">复制请求体</el-button>
-            <el-button
-              size="small"
-              type="primary"
-              :icon="VideoPlay"
-              :loading="debugRunning"
-              @click="runDebugQuery"
-            >执行巡检（调试）</el-button>
-          </div>
-        </div>
-      </template>
-      <div class="debug-hint">此请求体为执行巡检时发送给 ClickHouse 的完整内容（cookie / x-csrf-token 由后端自动注入，不在此展示）。「执行巡检（调试）」不依赖场景勾选，直接对 wallet_client_hmos 表发起真实查询。</div>
-      <pre class="debug-body">{{ requestBodyText || '（点击「生成请求体」查看完整请求体）' }}</pre>
-      <div v-if="debugResultText" class="debug-result">
-        <div class="debug-result-title">调试查询结果</div>
-        <pre class="debug-body">{{ debugResultText }}</pre>
       </div>
     </el-card>
 
@@ -290,6 +260,36 @@
         <iframe class="ai-report-frame" :srcdoc="aiReport.html" title="巡检日报" />
       </div>
       <el-empty v-else description="尚未生成日报，请先执行巡检（生成聚类摘要），再点击「生成日报」" :image-size="80" />
+    </el-card>
+
+    <!-- 调试面板：展示当前将发送的完整请求体（置于页面最下方） -->
+    <el-card shadow="never" class="card">
+      <template #header>
+        <div class="card-header">
+          <span>调试</span>
+          <div class="card-actions">
+            <div class="debug-toggle">
+              <span class="debug-toggle-label">详细日志模式</span>
+              <el-switch v-model="debugModeEnabled" size="small" @change="toggleDebugMode" />
+            </div>
+            <el-button size="small" :icon="Search" @click="previewRequestBody">生成请求体</el-button>
+            <el-button size="small" :icon="CopyDocument" @click="copyRequestBody">复制请求体</el-button>
+            <el-button
+              size="small"
+              type="primary"
+              :icon="VideoPlay"
+              :loading="debugRunning"
+              @click="runDebugQuery"
+            >执行巡检（调试）</el-button>
+          </div>
+        </div>
+      </template>
+      <div class="debug-hint">此请求体为执行巡检时发送给 ClickHouse 的完整内容（cookie / x-csrf-token 由后端自动注入，不在此展示）。「执行巡检（调试）」不依赖场景勾选，直接对 wallet_client_hmos 表发起真实查询。</div>
+      <pre class="debug-body">{{ requestBodyText || '（点击「生成请求体」查看完整请求体）' }}</pre>
+      <div v-if="debugResultText" class="debug-result">
+        <div class="debug-result-title">调试查询结果</div>
+        <pre class="debug-body">{{ debugResultText }}</pre>
+      </div>
     </el-card>
 
     <!-- AI 设置对话框 -->

@@ -23,6 +23,7 @@ const { logger } = require('./logger');
 const llm = require('./llm-service');
 const aiConfig = require('./ai-config-store');
 const correctionStore = require('./correction-store');
+const failureLibrary = require('./failure-library-store');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
 
@@ -257,6 +258,15 @@ async function generateDailyReport({ mock = false } = {}) {
     ? '\n\n注意：请结合上述人工矫正意见修正场景分析与整体结论，避免与人工判断冲突。'
     : '';
 
+  // 失败场景库参考（人工维护的案例分析，按场景+内码+外码组织，喂给汇总调用）
+  const failureText = failureLibrary.aiReferenceText();
+  const failureBlock = failureText
+    ? `\n\n以下为巡检失败场景库中的人工案例分析（用于判断问题根因与处置方向，请参考并结合到对应场景的分析与建议中）：\n${failureText}\n`
+    : '';
+  const failureHint = failureText
+    ? '\n\n请结合失败场景库的案例分析，使各场景问题分析与处置建议与人工判断保持一致。'
+    : '';
+
   // 汇总输入控制：每场景分析限长，保证总输入不超过 maxChars（避免汇总调用超时）
   const perSceneBudget = Math.max(800, Math.floor((maxChars * 0.8) / sceneReports.length));
   const sceneSections = sceneReports.map((sr, i) => {
@@ -264,9 +274,9 @@ async function generateDailyReport({ mock = false } = {}) {
     return `### 场景 ${i + 1}：${sr.title}\n${clipped}`;
   }).join('\n\n');
 
-  const reportUser = `本次巡检概况：\n${overviewLines}${correctionBlock}\n\n以下是各场景的问题分析结果：\n\n${sceneSections}\n\n请据此生成完整的三段式巡检日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。${correctionHint}`;
+  const reportUser = `本次巡检概况：\n${overviewLines}${correctionBlock}${failureBlock}\n\n以下是各场景的问题分析结果：\n\n${sceneSections}\n\n请据此生成完整的三段式巡检日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。${correctionHint}${failureHint}`;
 
-  logger.info(`[ai-report] final call inputChars=${reportUser.length} perSceneBudget=${perSceneBudget} corrections=${correctionsText ? correctionsText.split('\n').length : 0}`);
+  logger.info(`[ai-report] final call inputChars=${reportUser.length} perSceneBudget=${perSceneBudget} corrections=${correctionsText ? correctionsText.split('\n').length : 0} failureCases=${failureText ? failureText.split('\n').length : 0}`);
   let markdown;
   if (mock) {
     const mockSections = sceneReports.map((sr, i) => `### 场景 ${i + 1}：${sr.title}\n\n${sr.content}`).join('\n\n');
@@ -287,6 +297,9 @@ async function generateDailyReport({ mock = false } = {}) {
     ].join('\n');
     if (correctionsText) {
       markdown += `\n## 附：人工矫正意见\n${correctionsText}\n`;
+    }
+    if (failureText) {
+      markdown += `\n## 附：失败场景库参考\n${failureText}\n`;
     }
   } else {
     const r = await llm.callChat({ system: REPORT_SYSTEM, user: reportUser });

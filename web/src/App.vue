@@ -25,6 +25,10 @@
           <el-icon><Files /></el-icon>
           <span>巡检场景管理</span>
         </el-menu-item>
+        <el-menu-item index="/failure-library">
+          <el-icon><Notebook /></el-icon>
+          <span>巡检失败场景库</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
