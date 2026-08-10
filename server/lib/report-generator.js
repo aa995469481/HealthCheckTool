@@ -123,11 +123,16 @@ function buildSceneBlocks(summary) {
     lines.push(`- 聚类维度 ${di + 1}：${dim.field}` + (dim.subField ? `（二级下钻字段：${dim.subField}）` : ''));
     for (const g of dim.groups || []) {
       lines.push(`- ${dim.field}=${g.key}：${g.count}条（占比${g.percent}%）`);
-      const vd = (g.versionDist || []).slice(0, 3);
-      if (vd.length) {
-        const more = (g.versionDist || []).length > 3 ? ' 等' : '';
-        lines.push(`  版本分布：${vd.map((v) => `${v.version} ${v.count}条`).join('、')}${more}`);
-      }
+      // 统计展示列：跟随场景管理配置（statFields），未配置则不输出
+      const stats = (g.statistics || [])
+        .map((s) => {
+          const top = (s.dist || []).slice(0, 3);
+          if (!top.length) return null;
+          const more = (s.dist || []).length > 3 ? ' 等' : '';
+          return `${s.field}：${top.map((d) => `${d.value} ${d.count}条`).join('、')}${more}`;
+        })
+        .filter(Boolean);
+      if (stats.length) lines.push(`  统计分布：${stats.join('；')}`);
       if (g.children && g.children.length) {
         lines.push(`  二级细分：${g.children.map((c) => `${c.key} ${c.count}条(${c.percent}%)`).join('、')}`);
         if (g.subOthersCount) lines.push(`  其余二级 ${g.subOthersCount} 条超 Top7 未列出`);

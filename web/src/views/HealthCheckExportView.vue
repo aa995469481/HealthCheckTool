@@ -162,12 +162,21 @@
               <el-table-column prop="percent" label="占比" width="100">
                 <template #default="{ row }">{{ row.percent }}%</template>
               </el-table-column>
-              <el-table-column label="版本分布" min-width="190">
+              <!-- 统计展示列：按场景管理配置的 statFields 动态渲染，未配置则不展示 -->
+              <el-table-column
+                v-for="sf in (s.statFields || [])"
+                :key="sf"
+                :label="sf"
+                min-width="160"
+              >
                 <template #default="{ row }">
-                  <el-tag v-for="v in row.versionDist.slice(0, 3)" :key="v.version" size="small" class="cell-tag">
-                    {{ v.version }} {{ v.count }}条
-                  </el-tag>
-                  <span v-if="row.versionDist.length > 3" class="cell-more">…等{{ row.versionDist.length }}个版本</span>
+                  <template v-if="(row.statistics || []).length">
+                    <el-tag v-for="v in statDist(row, sf).slice(0, 3)" :key="v.value" size="small" class="cell-tag">
+                      {{ v.value }} {{ v.count }}条
+                    </el-tag>
+                    <span v-if="statDist(row, sf).length > 3" class="cell-more">…等{{ statDist(row, sf).length }}个</span>
+                  </template>
+                  <span v-else class="text-muted">-</span>
                 </template>
               </el-table-column>
               <el-table-column label="代表样本" min-width="240">
@@ -641,6 +650,12 @@ async function loadAnalysis() {
   } catch (e) {
     analysis.value = null;
   }
+}
+
+/** 从分组统计中取指定统计字段的取值分布（statistics 为 [{field, dist}]） */
+function statDist(row, sf) {
+  const s = (row.statistics || []).find((x) => x.field === sf);
+  return s ? s.dist : [];
 }
 
 async function previewRequestBody() {

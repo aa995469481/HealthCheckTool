@@ -72,15 +72,22 @@ function richness(record, fields) {
 
 /* ---------- 统计工具 ---------- */
 
-function calcVersionDist(records, versionField) {
+/** 统计展示列：按配置的统计字段统计取值分布（Top 前展示，其余计数展示） */
+function calcFieldDist(records, statField) {
   const map = new Map();
   for (const r of records) {
-    const v = fieldValue(r, versionField) || '未知';
+    const v = fieldValue(r, statField) || '(空)';
     map.set(v, (map.get(v) || 0) + 1);
   }
   return [...map.entries()]
-    .map(([version, count]) => ({ version, count }))
+    .map(([value, count]) => ({ value, count }))
     .sort((a, b) => b.count - a.count);
+}
+
+/** 为分组记录生成所有配置统计字段的分布（statFields 为空则返回空数组） */
+function calcStatistics(subList, statFields) {
+  if (!statFields || statFields.length === 0) return [];
+  return statFields.map((f) => ({ field: f, dist: calcFieldDist(subList, f) }));
 }
 
 function pickSamples(records, focusFields, versionField) {
@@ -116,6 +123,10 @@ function buildClusterSummary(scene, records) {
     ? scene.clusterFields.map(String)
     : ['walletEventInCode', 'walletEventExtCode'];
   clusterFields = clusterFields.filter((f) => String(f).trim() !== '');
+  // 统计展示列：场景管理配置，来源为关注字段；未配置则聚类摘要不展示统计列
+  const statFields = Array.isArray(scene && scene.statFields) && scene.statFields.length
+    ? scene.statFields.map(String).filter((f) => focusFields.includes(f))
+    : [];
   const total = Array.isArray(records) ? records.length : 0;
   const allRecords = records || [];
 
@@ -142,7 +153,7 @@ function buildClusterSummary(scene, records) {
         field,
         count,
         percent,
-        versionDist: calcVersionDist(subList, versionField),
+        statistics: calcStatistics(subList, statFields),
         samples: pickSamples(subList, focusFields, versionField)
       };
       // 二级下钻：一级分组内再按 subField 细分
@@ -162,7 +173,7 @@ function buildClusterSummary(scene, records) {
             field: subField,
             count: c2,
             percent: count > 0 ? Number(((c2 / count) * 100).toFixed(1)) : 0,
-            versionDist: calcVersionDist(subSubList, versionField),
+            statistics: calcStatistics(subSubList, statFields),
             samples: pickSamples(subSubList, focusFields, versionField)
           });
         }
@@ -212,18 +223,27 @@ function buildClusterSummary(scene, records) {
   const summary = {
     scenarioTitle: scene && scene.title ? scene.title : '',
     clusterFields,
+    statFields,
     total,
     dimensions,
     others: null // 兼容旧字段：多维度下不再有全局 others
   };
 
   logger.info(
-    `[cluster] scene=${summary.scenarioTitle} fields=[${clusterFields.join(', ')}] total=${total} dims=${dimensions.length}`
+    `[cluster] scene=${summary.scenarioTitle} fields=[${clusterFields.join(', ')}] statFields=[${statFields.join(', ')}] total=${total} dims=${dimensions.length}`
   );
   return summary;
 }
 
 /* ---------- Markdown 文本（喂大模型用） ---------- */
+
+/** 输出配置的统计展示列分布文本，如「版本 _app_ver：v1 2条、v2 1条」 */
+function statLine(statistics) {
+  if (!statistics || statistics.length === 0) return null;
+  return statistics
+    .map((s) => `${s.field}：${s.dist.map((d) => `${d.value} ${d.count}条`).join('、')}`)
+    .join('；');
+}
 
 function toMarkdown(summary) {
   const lines = [];
@@ -236,17 +256,15 @@ function toMarkdown(summary) {
     lines.push(`### 维度 ${dim.field}（按该字段取值分组）` + (dim.subField ? `，二级下钻字段：${dim.subField}` : ''));
     for (const g of dim.groups) {
       lines.push(`- ${g.field}=${g.key}：${g.count}条（占比${g.percent}%）`);
-      if (g.versionDist && g.versionDist.length) {
-        lines.push(`  版本分布：${g.versionDist.map((v) => `${v.version} ${v.count}条`).join('、')}`);
-      }
+      const line = statLine(g.statistics);
+      if (line) lines.push(`  统计分布：${line}`);
       // 二级分组
       if (g.children && g.children.length) {
         lines.push(`  二级细分（${g.children.length} 组）：`);
         for (const sub of g.children) {
           lines.push(`    - ${sub.field}=${sub.key}：${sub.count}条（占一级${sub.percent}%）`);
-          if (sub.versionDist && sub.versionDist.length) {
-            lines.push(`      版本分布：${sub.versionDist.map((v) => `${v.version} ${v.count}条`).join('、')}`);
-          }
+          const subLine = statLine(sub.statistics);
+          if (subLine) lines.push(`      统计分布：${subLine}`);
           if (sub.samples && sub.samples.length) {
             sub.samples.forEach((s, i) => {
               lines.push(`      样本${i + 1}：${JSON.stringify(s)}`);

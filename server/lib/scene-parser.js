@@ -223,6 +223,7 @@ function parseAndValidate(urlStr, bodyStr) {
     focusFields,
     clusterFields,
     clusterSubFields: {},
+    statFields: [], // 统计展示列（来源为关注字段），未配置则聚类摘要不展示统计列
     filterCondition,
     createdAt: null
   };

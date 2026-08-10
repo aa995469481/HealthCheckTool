@@ -136,6 +136,23 @@
               </template>
             </div>
           </el-form-item>
+          <el-form-item label="统计展示列">
+            <div class="stat-fields">
+              <template v-if="sceneDraft.focusFields.length">
+                <el-checkbox-group v-model="sceneDraft.statFields" class="cluster-check-group">
+                  <el-checkbox
+                    v-for="f in sceneDraft.focusFields"
+                    :key="f"
+                    :label="f"
+                    class="cluster-check-item"
+                  >{{ f }}</el-checkbox>
+                </el-checkbox-group>
+              </template>
+              <div class="focus-hint" style="margin-top: 6px">
+                可多选：选中的字段会作为聚类摘要中的统计展示列（按字段取值分布展示，如勾选 _app_ver 即版本分布列）；未配置则不展示统计列，AI 分析输入同样跟随
+              </div>
+            </div>
+          </el-form-item>
         </el-form>
 
         <!-- 过滤条件概览 -->
@@ -192,6 +209,14 @@
               </el-tag>
             </div>
             <span v-else class="text-muted">默认(内码+外码)</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="统计展示列" min-width="150">
+          <template #default="{ row }">
+            <template v-if="(row.statFields || []).length">
+              <el-tag v-for="f in row.statFields" :key="f" size="small" type="primary" effect="plain">{{ f }}</el-tag>
+            </template>
+            <span v-else class="text-muted">未配置(不展示)</span>
           </template>
         </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="170" />
@@ -273,6 +298,7 @@ async function parseScene() {
       ];
     }
     if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
+    if (!Array.isArray(sceneDraft.value.statFields)) sceneDraft.value.statFields = [];
     warnings.value = data.warnings || [];
     ElMessage.success('解析成功，请确认场景信息后保存');
   } catch (e) {
