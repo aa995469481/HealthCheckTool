@@ -123,7 +123,7 @@ function buildSceneBlocks(summary) {
     lines.push(`- 聚类维度 ${di + 1}：${dim.field}` + (dim.subField ? `（二级下钻字段：${dim.subField}）` : ''));
     for (const g of dim.groups || []) {
       lines.push(`- ${dim.field}=${g.key}：${g.count}条（占比${g.percent}%）`);
-      // 统计展示列：跟随场景管理配置（statFields），未配置则不输出
+      // 统计展示列：跟随该维度（一级聚类维度）独立配置（dim.statFields），未配置则不输出
       const stats = (g.statistics || [])
         .map((s) => {
           const top = (s.dist || []).slice(0, 3);

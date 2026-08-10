@@ -123,15 +123,21 @@ function buildClusterSummary(scene, records) {
     ? scene.clusterFields.map(String)
     : ['walletEventInCode', 'walletEventExtCode'];
   clusterFields = clusterFields.filter((f) => String(f).trim() !== '');
-  // 统计展示列：场景管理配置，来源为关注字段；未配置则聚类摘要不展示统计列
-  const statFields = Array.isArray(scene && scene.statFields) && scene.statFields.length
-    ? scene.statFields.map(String).filter((f) => focusFields.includes(f))
-    : [];
+  // 统计展示列：场景管理按「一级维度」独立配置（clusterStatFields[一级字段]），来源为关注字段；
+  // 未配置的维度不展示统计列；兼容旧版场景级 statFields 作为兜底
+  const statFieldsFor = (field) => {
+    const per =
+      scene && scene.clusterStatFields && Array.isArray(scene.clusterStatFields[field]) && scene.clusterStatFields[field].length
+        ? scene.clusterStatFields[field]
+        : null;
+    const arr = per || (scene && Array.isArray(scene.statFields) && scene.statFields.length ? scene.statFields : []);
+    return arr.map(String).filter((f) => focusFields.includes(f));
+  };
   const total = Array.isArray(records) ? records.length : 0;
   const allRecords = records || [];
 
-  // 对单个字段做一级分组统计，可带二级下钻字段
-  function buildDimension(field, subField) {
+  // 对单个字段做一级分组统计，可带二级下钻字段；statFields 为该维度独立配置的统计展示列
+  function buildDimension(field, subField, statFields) {
     // 每个维度仅保留条数 Top 7，其余并入其他
     const TOP_K = 7;
     const SMALL_PERCENT = 1;
@@ -215,22 +221,24 @@ function buildClusterSummary(scene, records) {
 
   const dimensions = clusterFields.map((field) => {
     const subField = (scene && scene.clusterSubFields && scene.clusterSubFields[field]) || null;
-    const dim = buildDimension(field, subField);
+    const dim = buildDimension(field, subField, statFieldsFor(field));
     dim.subField = subField;
+    dim.statFields = statFieldsFor(field);
     return dim;
   });
 
   const summary = {
     scenarioTitle: scene && scene.title ? scene.title : '',
     clusterFields,
-    statFields,
     total,
     dimensions,
     others: null // 兼容旧字段：多维度下不再有全局 others
   };
 
   logger.info(
-    `[cluster] scene=${summary.scenarioTitle} fields=[${clusterFields.join(', ')}] statFields=[${statFields.join(', ')}] total=${total} dims=${dimensions.length}`
+    `[cluster] scene=${summary.scenarioTitle} fields=[${clusterFields.join(', ')}] statFieldsByDim=[${clusterFields
+      .map((f) => `${f}:${summary.dimensions.find((d) => d.field === f).statFields.join(',') || '无'}`)
+      .join('; ')}] total=${total} dims=${dimensions.length}`
   );
   return summary;
 }

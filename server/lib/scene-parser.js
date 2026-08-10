@@ -223,7 +223,9 @@ function parseAndValidate(urlStr, bodyStr) {
     focusFields,
     clusterFields,
     clusterSubFields: {},
-    statFields: [], // 统计展示列（来源为关注字段），未配置则聚类摘要不展示统计列
+    // 统计展示列：按「一级聚类维度」独立配置（clusterStatFields[一级字段] = [统计字段]），来源为关注字段；
+    // 未配置的维度不展示统计列（兼容旧版场景级 statFields 数组由前端迁移为各维度共享）
+    clusterStatFields: {},
     filterCondition,
     createdAt: null
   };

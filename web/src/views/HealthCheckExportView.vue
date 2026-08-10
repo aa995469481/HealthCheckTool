@@ -162,9 +162,9 @@
               <el-table-column prop="percent" label="占比" width="100">
                 <template #default="{ row }">{{ row.percent }}%</template>
               </el-table-column>
-              <!-- 统计展示列：按场景管理配置的 statFields 动态渲染，未配置则不展示 -->
+              <!-- 统计展示列：按该维度（一级聚类维度）独立配置的 dim.statFields 动态渲染，未配置则不展示 -->
               <el-table-column
-                v-for="sf in (s.statFields || [])"
+                v-for="sf in (dim.statFields || [])"
                 :key="sf"
                 :label="sf"
                 min-width="160"

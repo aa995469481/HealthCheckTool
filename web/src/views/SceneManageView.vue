@@ -127,40 +127,38 @@
                 可多选，每个字段都是独立的 1 级分析维度（按字段取值分别分组，并列展示，互不级联）；勾选/取消即启用/停用该维度
               </div>
 
-              <!-- 二级聚类配置：每个一级维度可配置一个二级下钻字段 -->
+              <!-- 二级聚类配置 + 统计展示列：每个一级维度一行，可配置二级下钻字段与该维度统计展示列 -->
               <template v-if="sceneDraft.clusterFields.length">
-                <div class="sub-cluster-title">二级聚类下钻（可选，每个一级维度配置一个）</div>
+                <div class="sub-cluster-title">二级聚类下钻与统计展示列（可选，每个一级维度各自配置）</div>
                 <div v-for="f in sceneDraft.clusterFields" :key="f" class="sub-cluster-row">
                   <el-tag size="small" type="warning" effect="plain" class="sub-cluster-level">{{ f }}</el-tag>
                   <el-select
                     :model-value="sceneDraft.clusterSubFields[f] || ''"
-                    placeholder="选择二级字段（可选）"
+                    placeholder="二级下钻字段（可选）"
                     size="small"
                     clearable
-                    style="width: 240px"
+                    style="width: 190px"
                     @change="(v) => onSubFieldChange(f, v)"
                   >
                     <el-option v-for="sf in subFieldOptions(f)" :key="sf" :label="sf" :value="sf" />
                   </el-select>
+                  <span class="sub-cluster-sep">统计展示列</span>
+                  <el-select
+                    :model-value="sceneDraft.clusterStatFields[f] || []"
+                    placeholder="统计展示列（可选，多选）"
+                    multiple
+                    collapse-tags
+                    size="small"
+                    style="width: 300px"
+                    @change="(v) => onStatFieldsChange(f, v)"
+                  >
+                    <el-option v-for="sf in sceneDraft.focusFields" :key="sf" :label="sf" :value="sf" />
+                  </el-select>
+                </div>
+                <div class="focus-hint" style="margin-top: 4px">
+                  每个维度的统计展示列独立配置：选中的字段作为该维度聚类摘要中的统计列（按字段取值分布展示，如勾选 _app_ver 即版本分布列）；未配置则该维度不展示统计列，AI 分析输入同样跟随
                 </div>
               </template>
-            </div>
-          </el-form-item>
-          <el-form-item label="统计展示列">
-            <div class="stat-fields">
-              <template v-if="sceneDraft.focusFields.length">
-                <el-checkbox-group v-model="sceneDraft.statFields" class="cluster-check-group">
-                  <el-checkbox
-                    v-for="f in sceneDraft.focusFields"
-                    :key="f"
-                    :label="f"
-                    class="cluster-check-item"
-                  >{{ f }}</el-checkbox>
-                </el-checkbox-group>
-              </template>
-              <div class="focus-hint" style="margin-top: 6px">
-                可多选：选中的字段会作为聚类摘要中的统计展示列（按字段取值分布展示，如勾选 _app_ver 即版本分布列）；未配置则不展示统计列，AI 分析输入同样跟随
-              </div>
             </div>
           </el-form-item>
         </el-form>
@@ -221,12 +219,13 @@
             <span v-else class="text-muted">默认(内码+外码)</span>
           </template>
         </el-table-column>
-        <el-table-column label="统计展示列" min-width="150">
+        <el-table-column label="统计展示列" min-width="170">
           <template #default="{ row }">
-            <template v-if="(row.statFields || []).length">
-              <el-tag v-for="f in row.statFields" :key="f" size="small" type="primary" effect="plain">{{ f }}</el-tag>
-            </template>
-            <span v-else class="text-muted">未配置(不展示)</span>
+            <div v-for="(fields, f) in (row.clusterStatFields || {})" :key="f" class="scene-stat-row">
+              <span class="scene-stat-field">{{ f }}:</span>
+              <el-tag v-for="sf in fields" :key="sf" size="small" type="primary" effect="plain">{{ sf }}</el-tag>
+            </div>
+            <span v-if="!Object.keys(row.clusterStatFields || {}).length" class="text-muted">未配置(不展示)</span>
           </template>
         </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="170" />
@@ -310,7 +309,14 @@ async function parseScene() {
       ];
     }
     if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
-    if (!Array.isArray(sceneDraft.value.statFields)) sceneDraft.value.statFields = [];
+    if (!sceneDraft.value.clusterStatFields) sceneDraft.value.clusterStatFields = {};
+    // 兼容旧版场景级统计列：迁移为所有维度的统计列
+    if (Array.isArray(sceneDraft.value.statFields) && sceneDraft.value.statFields.length) {
+      for (const f of sceneDraft.value.clusterFields) {
+        if (!sceneDraft.value.clusterStatFields[f]) sceneDraft.value.clusterStatFields[f] = sceneDraft.value.statFields.slice();
+      }
+      sceneDraft.value.statFields = [];
+    }
     warnings.value = data.warnings || [];
     ElMessage.success('解析成功，请确认场景信息后保存');
   } catch (e) {
@@ -358,7 +364,14 @@ function editScene(row) {
     sceneDraft.value.clusterFields = ['walletEventInCode', 'walletEventExtCode'];
   }
   if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
-  if (!Array.isArray(sceneDraft.value.statFields)) sceneDraft.value.statFields = [];
+  if (!sceneDraft.value.clusterStatFields) sceneDraft.value.clusterStatFields = {};
+  // 兼容旧版场景级统计列：迁移为所有维度的统计列
+  if (Array.isArray(sceneDraft.value.statFields) && sceneDraft.value.statFields.length) {
+    for (const f of sceneDraft.value.clusterFields) {
+      if (!sceneDraft.value.clusterStatFields[f]) sceneDraft.value.clusterStatFields[f] = sceneDraft.value.statFields.slice();
+    }
+    sceneDraft.value.statFields = [];
+  }
   focusInputVisible.value = false;
   // 滚动到顶部编辑表单
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -416,6 +429,14 @@ function onSubFieldChange(f, v) {
   if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
   if (v) sceneDraft.value.clusterSubFields[f] = v;
   else delete sceneDraft.value.clusterSubFields[f];
+}
+
+/** 维度统计展示列变更：clusterStatFields[一级字段] = 统计字段数组 */
+function onStatFieldsChange(f, v) {
+  if (!sceneDraft.value.clusterStatFields) sceneDraft.value.clusterStatFields = {};
+  const arr = Array.isArray(v) ? v.filter((x) => x) : [];
+  if (arr.length) sceneDraft.value.clusterStatFields[f] = arr;
+  else delete sceneDraft.value.clusterStatFields[f];
 }
 
 onMounted(loadScenes);
@@ -500,12 +521,31 @@ onMounted(loadScenes);
 .sub-cluster-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 4px;
+}
+.sub-cluster-sep {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 4px;
 }
 .sub-cluster-level {
   min-width: 130px;
   font-family: Consolas, monospace;
+}
+.scene-stat-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+.scene-stat-field {
+  font-size: 12px;
+  font-family: Consolas, monospace;
+  color: #606266;
+  margin-right: 2px;
 }
 .scene-cluster-tag {
   margin: 2px 4px 2px 0;
