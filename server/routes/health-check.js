@@ -480,9 +480,9 @@ router.get('/failure-library', (req, res) => {
 
 /* ---------- 12.1 巡检失败场景库：新增 ---------- */
 router.post('/failure-library', (req, res) => {
-  const { sceneId, sceneTitle, inCode, extCode, analysis } = req.body || {};
+  const { sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension } = req.body || {};
   try {
-    const item = failureLibrary.add({ sceneId, sceneTitle, inCode, extCode, analysis });
+    const item = failureLibrary.add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension });
     res.json({ code: 0, msg: 'ok', data: item });
   } catch (e) {
     logger.warn(`[failure-library] add failed: ${e.message}`);
@@ -525,6 +525,37 @@ router.post('/failure-library/import', (req, res) => {
     res.json({ code: 0, msg: 'ok', data: result });
   } catch (e) {
     logger.error('[failure-library] import failed', e);
+    res.json({ code: 1, msg: '导入失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 12.5 巡检失败场景库：导出 CSV 文件下载 ---------- */
+router.get('/failure-library/export', (req, res) => {
+  try {
+    const csv = failureLibrary.exportCsv();
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const fname = `failure-library-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=${fname}`);
+    res.send(csv);
+    logger.info(`[failure-library] export csv -> ${fname}`);
+  } catch (e) {
+    logger.error('[failure-library] export failed', e);
+    res.json({ code: 1, msg: '导出失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 12.6 巡检失败场景库：从 CSV 文件导入（覆盖更新） ---------- */
+router.post('/failure-library/import-file', (req, res) => {
+  const { csv } = req.body || {};
+  try {
+    if (!csv || !String(csv).trim()) return res.json({ code: 1, msg: '未收到文件内容' });
+    const result = failureLibrary.importCsv(String(csv));
+    logger.info(`[failure-library] import csv result=${JSON.stringify(result)}`);
+    res.json({ code: 0, msg: 'ok', data: result });
+  } catch (e) {
+    logger.error('[failure-library] import csv failed', e);
     res.json({ code: 1, msg: '导入失败：' + (e.message || '未知错误') });
   }
 });

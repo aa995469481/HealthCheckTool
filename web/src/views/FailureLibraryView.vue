@@ -8,6 +8,12 @@
             <el-button size="small" :icon="Download" :loading="importing" @click="importFromAnalysis">
               从聚类摘要一键导入
             </el-button>
+            <el-button size="small" :icon="Download" :disabled="items.length === 0" @click="exportCsv">
+              导出 CSV
+            </el-button>
+            <el-button size="small" :icon="Upload" :loading="importing" @click="pickFile">
+              导入 CSV
+            </el-button>
             <el-button size="small" :icon="Plus" @click="openAdd">
               新增案例
             </el-button>
@@ -24,25 +30,58 @@
         </div>
       </template>
 
+      <input ref="fileInputRef" type="file" accept=".csv,text/csv" style="display: none" @change="onFileChange" />
+
       <div class="library-hint">
-        按「场景 + 内码 + 外码」维护失败案例分析（根因 / 影响 / 处置建议）。每次执行巡检后自动更新「最近命中」条数；生成 AI 巡检日报时，此处有分析的案例会作为参考喂给大模型。
+        按「场景 + 内码 + 外码」维护失败案例分析（根因 / 影响 / 处置建议）。每次执行巡检后自动更新「最近命中」条数；生成 AI 巡检日报时，仅「已分析 / 已闭环」且有分析的案例会作为参考喂给大模型。
       </div>
 
-      <el-table :data="items" stripe v-loading="loading">
+      <div class="filter-bar">
+        <el-select v-model="filters.scene" placeholder="全部场景" clearable filterable size="small" style="width: 170px">
+          <el-option v-for="s in scenes" :key="s.id" :label="s.title" :value="s.title" />
+        </el-select>
+        <el-select v-model="filters.category" placeholder="全部类别" clearable size="small" style="width: 130px">
+          <el-option v-for="c in CATEGORY_OPTIONS" :key="c" :label="c" :value="c" />
+        </el-select>
+        <el-select v-model="filters.status" placeholder="全部状态" clearable size="small" style="width: 120px">
+          <el-option v-for="s in STATUS_OPTIONS" :key="s" :label="s" :value="s" />
+        </el-select>
+        <el-input v-model="filters.cardDimension" placeholder="卡维度（如 All / NA）" clearable size="small" style="width: 150px" />
+        <el-input v-model="filters.keyword" placeholder="内码/外码/分析关键词" clearable size="small" style="width: 200px" />
+        <el-button size="small" :icon="Refresh" @click="resetFilters">重置</el-button>
+        <span class="filter-count">共 {{ filteredItems.length }} / {{ items.length }} 条</span>
+      </div>
+
+      <el-table :data="filteredItems" stripe v-loading="loading">
         <el-table-column prop="sceneTitle" label="场景" min-width="160" show-overflow-tooltip />
-        <el-table-column label="内码" width="110">
+        <el-table-column label="内码" width="100">
           <template #default="{ row }">
             <el-tag v-if="row.inCode" size="small" type="warning" effect="plain">{{ row.inCode }}</el-tag>
             <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="外码" width="120">
+        <el-table-column label="外码" width="110">
           <template #default="{ row }">
             <el-tag v-if="row.extCode" size="small" type="primary" effect="plain">{{ row.extCode }}</el-tag>
             <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="案例分析" min-width="280" show-overflow-tooltip>
+        <el-table-column label="卡维度" width="110">
+          <template #default="{ row }">
+            <span>{{ row.cardDimension || 'NA' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="问题类别" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" :type="categoryTagType(row.category)" effect="plain">{{ row.category || '默认待确认' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="问题状态" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="statusTagType(row.status)" effect="plain">{{ row.status || '待确认' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="案例分析" min-width="260" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.analysis" class="analysis-text">{{ row.analysis }}</span>
             <el-tag v-else size="small" type="info" effect="plain">待补充</el-tag>
@@ -94,6 +133,19 @@
         <el-form-item label="外码">
           <el-input v-model="form.extCode" placeholder="如 E001" style="width: 260px" />
         </el-form-item>
+        <el-form-item label="问题类别">
+          <el-select v-model="form.category" placeholder="问题类别" style="width: 260px">
+            <el-option v-for="c in CATEGORY_OPTIONS" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="问题状态">
+          <el-select v-model="form.status" placeholder="问题状态" style="width: 260px">
+            <el-option v-for="s in STATUS_OPTIONS" :key="s" :label="s" :value="s" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="卡维度">
+          <el-input v-model="form.cardDimension" placeholder="如 All 或具体卡维度，默认 NA" style="width: 260px" />
+        </el-form-item>
         <el-form-item label="案例分析">
           <el-input
             v-model="form.analysis"
@@ -112,9 +164,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, Refresh, Download, Delete } from '@element-plus/icons-vue';
+import { Plus, Refresh, Download, Delete, Upload } from '@element-plus/icons-vue';
+
+const CATEGORY_OPTIONS = ['端侧问题', 'SP问题', '云侧问题', '默认待确认'];
+const STATUS_OPTIONS = ['待确认', '已分析', '已闭环'];
 
 const items = ref([]);
 const scenes = ref([]);
@@ -123,7 +178,40 @@ const importing = ref(false);
 const saving = ref(false);
 const dialogVisible = ref(false);
 const editingId = ref('');
-const form = reactive({ sceneId: '', sceneTitle: '', inCode: '', extCode: '', analysis: '' });
+const fileInputRef = ref();
+const form = reactive({ sceneId: '', sceneTitle: '', inCode: '', extCode: '', category: '默认待确认', status: '待确认', cardDimension: 'NA', analysis: '' });
+const filters = reactive({ scene: '', category: '', status: '', cardDimension: '', keyword: '' });
+
+/** 列表过滤：场景 / 问题类别 / 问题状态 / 卡维度 / 关键词（内码+外码+分析） */
+const filteredItems = computed(() =>
+  items.value.filter((it) => {
+    if (filters.scene && it.sceneTitle !== filters.scene) return false;
+    if (filters.category && (it.category || '默认待确认') !== filters.category) return false;
+    if (filters.status && (it.status || '待确认') !== filters.status) return false;
+    if (filters.cardDimension && !String(it.cardDimension || '').toLowerCase().includes(filters.cardDimension.trim().toLowerCase())) return false;
+    if (filters.keyword) {
+      const kw = filters.keyword.trim().toLowerCase();
+      const hay = [it.inCode, it.extCode, it.analysis].join(' ').toLowerCase();
+      if (!hay.includes(kw)) return false;
+    }
+    return true;
+  })
+);
+
+function categoryTagType(cat) {
+  return { '端侧问题': 'warning', 'SP问题': 'primary', '云侧问题': 'success', '默认待确认': 'info' }[cat || '默认待确认'] || 'info';
+}
+function statusTagType(st) {
+  return { '待确认': 'info', '已分析': 'warning', '已闭环': 'success' }[st || '待确认'] || 'info';
+}
+
+function resetFilters() {
+  filters.scene = '';
+  filters.category = '';
+  filters.status = '';
+  filters.cardDimension = '';
+  filters.keyword = '';
+}
 
 async function request(url, options = {}) {
   const res = await fetch(url, {
@@ -170,6 +258,9 @@ function resetForm() {
   form.sceneTitle = '';
   form.inCode = '';
   form.extCode = '';
+  form.category = '默认待确认';
+  form.status = '待确认';
+  form.cardDimension = 'NA';
   form.analysis = '';
 }
 
@@ -189,6 +280,9 @@ function openEdit(row) {
   form.sceneTitle = row.sceneTitle || '';
   form.inCode = row.inCode || '';
   form.extCode = row.extCode || '';
+  form.category = row.category || '默认待确认';
+  form.status = row.status || '待确认';
+  form.cardDimension = row.cardDimension || 'NA';
   form.analysis = row.analysis || '';
   dialogVisible.value = true;
 }
@@ -209,6 +303,9 @@ async function saveItem() {
       sceneTitle: form.sceneTitle,
       inCode: form.inCode,
       extCode: form.extCode,
+      category: form.category,
+      status: form.status,
+      cardDimension: form.cardDimension,
       analysis: form.analysis
     };
     if (editingId.value) {
@@ -281,6 +378,64 @@ async function importFromAnalysis() {
   }
 }
 
+/** 导出 CSV：请求后端生成文件并触发浏览器下载 */
+async function exportCsv() {
+  try {
+    const res = await fetch('/api/health-check/failure-library/export');
+    if (!res.ok) throw new Error(`导出失败（HTTP ${res.status}）`);
+    const blob = await res.blob();
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const fname = `failure-library-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(url);
+    ElMessage.success(`已导出 ${items.value.length} 条到 ${fname}`);
+  } catch (e) {
+    ElMessage.error(e.message || '导出失败');
+  }
+}
+
+function pickFile() {
+  fileInputRef.value && fileInputRef.value.click();
+}
+
+/** 选择 CSV 文件后读取并上传导入（覆盖更新已存在条目） */
+function onFileChange(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  if (!/\.csv$/i.test(file.name)) {
+    ElMessage.warning('请选择 CSV 文件');
+    e.target.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    importing.value = true;
+    try {
+      const data = await request('/api/health-check/failure-library/import-file', {
+        method: 'POST',
+        body: JSON.stringify({ csv: reader.result })
+      });
+      ElMessage.success(`导入完成：新增 ${data.added} 条，更新 ${data.updated} 条，跳过 ${data.skipped} 条`);
+      loadItems();
+    } catch (err) {
+      ElMessage.error(err.message || '导入失败');
+    } finally {
+      importing.value = false;
+      e.target.value = '';
+    }
+  };
+  reader.onerror = () => {
+    ElMessage.error('文件读取失败');
+    e.target.value = '';
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
 onMounted(() => {
   loadItems();
   loadScenes();
@@ -301,6 +456,17 @@ onMounted(() => {
   color: #909399;
   margin-bottom: 12px;
   line-height: 1.7;
+}
+.filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.filter-count {
+  font-size: 12px;
+  color: #909399;
 }
 .analysis-text {
   font-size: 13px;

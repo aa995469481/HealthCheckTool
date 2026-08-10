@@ -1,18 +1,38 @@
 /**
  * 巡检失败场景库存储 - 按「场景 + 内码 + 外码」维护案例分析，持久化到 server/data/failure-library.json
  *
- * 设计（与用户确认，2026-08-08）：
+ * 设计（与用户确认，2026-08-08 / 2026-08-10 补充字段）：
  *   - 每条案例 = 场景 + 内码(inCode) + 外码(extCode) + 案例分析文本（根因/影响/处置建议）
+ *   - 2026-08-10 新增维护字段：问题类别 category（端侧问题/SP问题/云侧问题/默认待确认，默认 默认待确认）、
+ *     问题状态 status（待确认/已分析/已闭环，默认 待确认）、卡维度 cardDimension（自由字符串或 All，默认 NA）
  *   - 统计：执行巡检后自动统计该组合在本次巡检中的命中条数，记录 latestHitCount（不手动维护）
- *   - 录入：手动新增/编辑 + 从聚类摘要维度 Top 分组一键导入
- *   - 供 AI 日报生成：aiReferenceText() 生成人工案例分析参考文本，喂给汇总调用
+ *   - 录入：手动新增/编辑 + 从聚类摘要维度 Top 分组一键导入 + CSV 文件导出/导入（按 场景+内码+外码 覆盖更新）
+ *   - 供 AI 日报生成：aiReferenceText() 仅引用「已分析/已闭环」且有分析文本的案例，喂给汇总调用
  */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { logger } = require('./logger');
+const sceneStore = require('./scene-store');
 
 const FILE = path.join(__dirname, '..', 'data', 'failure-library.json');
+
+/* ---------- 字段枚举与归一化（新增维护字段） ---------- */
+const CATEGORY_ENUM = ['端侧问题', 'SP问题', '云侧问题', '默认待确认'];
+const STATUS_ENUM = ['待确认', '已分析', '已闭环'];
+const DEFAULT_CATEGORY = '默认待确认';
+const DEFAULT_STATUS = '待确认';
+const DEFAULT_CARD = 'NA';
+
+const normalizeCategory = (v) => (CATEGORY_ENUM.includes(String(v || '').trim()) ? String(v).trim() : DEFAULT_CATEGORY);
+const normalizeStatus = (v) => (STATUS_ENUM.includes(String(v || '').trim()) ? String(v).trim() : DEFAULT_STATUS);
+const normalizeCard = (v) => {
+  const s = String(v || '').trim();
+  return s === '' ? DEFAULT_CARD : s;
+};
+
+/** CSV 表头（导出/导入共用，列顺序固定） */
+const CSV_HEADERS = ['场景', '内码', '外码', '卡维度', '问题类别', '问题状态', '案例分析', '最近命中', '最近检查', '更新时间'];
 
 function load() {
   try {
@@ -55,7 +75,7 @@ function list() {
 }
 
 /** 新增案例 */
-function add({ sceneId, sceneTitle, inCode, extCode, analysis }) {
+function add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension }) {
   const list = load();
   const now = new Date().toISOString();
   const item = {
@@ -65,6 +85,9 @@ function add({ sceneId, sceneTitle, inCode, extCode, analysis }) {
     inCode: String(inCode || '').trim(),
     extCode: String(extCode || '').trim(),
     analysis: String(analysis || '').trim(),
+    category: normalizeCategory(category),
+    status: normalizeStatus(status),
+    cardDimension: normalizeCard(cardDimension),
     latestHitCount: 0,
     lastCheckedAt: '',
     createdAt: now,
@@ -88,6 +111,9 @@ function update(id, patch = {}) {
   if (patch.inCode !== undefined) item.inCode = String(patch.inCode).trim();
   if (patch.extCode !== undefined) item.extCode = String(patch.extCode).trim();
   if (patch.analysis !== undefined) item.analysis = String(patch.analysis).trim();
+  if (patch.category !== undefined) item.category = normalizeCategory(patch.category);
+  if (patch.status !== undefined) item.status = normalizeStatus(patch.status);
+  if (patch.cardDimension !== undefined) item.cardDimension = normalizeCard(patch.cardDimension);
   item.updatedAt = new Date().toISOString();
   save(list);
   logger.info(`[failure-library] update id=${id}`);
@@ -215,6 +241,9 @@ function importFromSummaries(summaries, scenes, combosByScene = {}) {
       inCode,
       extCode,
       analysis: '',
+      category: DEFAULT_CATEGORY,
+      status: DEFAULT_STATUS,
+      cardDimension: DEFAULT_CARD,
       latestHitCount: hitCount || 0,
       lastCheckedAt: now,
       createdAt: now,
@@ -281,10 +310,12 @@ function importFromSummaries(summaries, scenes, combosByScene = {}) {
 
 /**
  * 生成喂给大模型的案例分析参考文本（空则返回 ''）
- * 仅取已有分析文本的条目，最多 20 条，每条分析截断 500 字符
+ * 仅取「已分析 / 已闭环」且有分析文本的条目（待确认的不作为 AI 判断依据），最多 20 条，每条分析截断 500 字符
  */
 function aiReferenceText() {
-  const list = load().filter((c) => c.analysis && String(c.analysis).trim());
+  const list = load().filter(
+    (c) => (c.status === '已分析' || c.status === '已闭环') && c.analysis && String(c.analysis).trim()
+  );
   if (!list.length) return '';
   const lines = list.slice(0, 20).map((c, i) => {
     const scene = c.sceneTitle || '未命名场景';
@@ -295,4 +326,147 @@ function aiReferenceText() {
   return lines.join('\n');
 }
 
-module.exports = { list, add, update, remove, clearAll, updateHitCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields };
+/* ---------- CSV 导出 / 导入 ---------- */
+
+function csvEscape(v) {
+  const s = v === null || v === undefined ? '' : String(v);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+/** 导出全部案例为 CSV 文本（含 UTF-8 BOM，Excel 可直接打开不乱码） */
+function exportCsv() {
+  const rows = load().map((c) => [
+    c.sceneTitle || '',
+    c.inCode || '',
+    c.extCode || '',
+    c.cardDimension || DEFAULT_CARD,
+    c.category || DEFAULT_CATEGORY,
+    c.status || DEFAULT_STATUS,
+    c.analysis || '',
+    c.latestHitCount || 0,
+    c.lastCheckedAt || '',
+    c.updatedAt || ''
+  ]);
+  const lines = [CSV_HEADERS, ...rows].map((r) => r.map(csvEscape).join(','));
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+/** 解析 CSV 文本为二维数组（支持引号包裹的字段，内含逗号/换行/双引号） */
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  const s = String(text || '').replace(/^\uFEFF/, '');
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+    } else if (ch === '\r' || ch === '\n') {
+      if (ch === '\r' && s[i + 1] === '\n') i++;
+      row.push(field);
+      field = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== '' || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * 从 CSV 文本导入（表头需与导出一致）：按 场景+内码+外码 匹配，
+ * 已存在则覆盖更新（类别/状态/卡维度/分析，命中数>0 时也更新），不存在则新增。
+ * 场景 ID 不在 CSV 中，导入时按标题从场景库解析 sceneId（保证后续命中数更新可用）
+ * @returns {{ added: number, updated: number, skipped: number }}
+ */
+function importCsv(text) {
+  const rows = parseCsv(text);
+  if (!rows.length) throw new Error('文件为空或格式不正确');
+  const header = rows[0].map((h) => String(h).trim());
+  const col = (name) => header.indexOf(name);
+  const iScene = col('场景');
+  const iIn = col('内码');
+  const iExt = col('外码');
+  const iCard = col('卡维度');
+  const iCat = col('问题类别');
+  const iStatus = col('问题状态');
+  const iAnalysis = col('案例分析');
+  const iHit = col('最近命中');
+  if (iScene < 0) throw new Error('CSV 缺少「场景」列，请使用导出的 CSV 模板格式');
+  if (iIn < 0 && iExt < 0) throw new Error('CSV 至少需要「内码」或「外码」列');
+
+  const sceneMap = new Map(sceneStore.listScenes().map((s) => [s.title, s]));
+  const list = load();
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
+  const now = new Date().toISOString();
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (row.length === 1 && String(row[0]).trim() === '') continue; // 空行
+    const get = (i) => (i >= 0 && i < row.length ? String(row[i] || '').trim() : '');
+    const sceneTitle = get(iScene);
+    const inCode = get(iIn);
+    const extCode = get(iExt);
+    if (!sceneTitle || (!inCode && !extCode)) { skipped++; continue; }
+    const scene = sceneMap.get(sceneTitle);
+    const exist = list.find(
+      (c) => c.sceneTitle === sceneTitle && (c.inCode || '') === inCode && (c.extCode || '') === extCode
+    );
+    const patch = {
+      category: normalizeCategory(get(iCat)),
+      status: normalizeStatus(get(iStatus)),
+      cardDimension: normalizeCard(get(iCard)),
+      analysis: get(iAnalysis)
+    };
+    if (exist) {
+      exist.category = patch.category;
+      exist.status = patch.status;
+      exist.cardDimension = patch.cardDimension;
+      if (patch.analysis !== '') exist.analysis = patch.analysis;
+      if (!exist.sceneId && scene) exist.sceneId = scene.id;
+      const hit = Number(get(iHit));
+      if (!isNaN(hit) && hit > 0) exist.latestHitCount = hit;
+      exist.updatedAt = now;
+      updated++;
+    } else {
+      list.push({
+        id: crypto.randomBytes(8).toString('hex'),
+        sceneId: scene ? scene.id : '',
+        sceneTitle,
+        inCode,
+        extCode,
+        analysis: patch.analysis,
+        category: patch.category,
+        status: patch.status,
+        cardDimension: patch.cardDimension,
+        latestHitCount: 0,
+        lastCheckedAt: '',
+        createdAt: now,
+        updatedAt: now
+      });
+      added++;
+    }
+  }
+  if (added + updated > 0) save(list);
+  logger.info(`[failure-library] import csv added=${added} updated=${updated} skipped=${skipped}`);
+  return { added, updated, skipped };
+}
+
+module.exports = { list, add, update, remove, clearAll, updateHitCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields, exportCsv, importCsv };
