@@ -4,30 +4,40 @@
     <el-card shadow="never" class="card">
       <template #header>
         <div class="card-header">
-          <span>创建巡检场景</span>
+          <span>
+            {{ editingId ? '编辑巡检场景' : '创建巡检场景' }}
+            <el-tag v-if="editingId" size="small" type="warning" class="editing-tag">
+              正在编辑：{{ sceneDraft && sceneDraft.title }}
+            </el-tag>
+          </span>
           <div class="card-actions">
-            <el-button size="small" :icon="Search" :loading="parsing" @click="parseScene">解析生成场景</el-button>
-            <el-button size="small" type="primary" :icon="CircleCheck" :loading="saving" @click="saveScene">保存场景</el-button>
+            <el-button v-if="editingId" size="small" @click="cancelEdit">取消编辑</el-button>
+            <el-button size="small" :icon="Search" :loading="parsing" :disabled="!!editingId" @click="parseScene">解析生成场景</el-button>
+            <el-button size="small" type="primary" :icon="CircleCheck" :loading="saving" @click="saveScene">
+              {{ editingId ? '保存修改' : '保存场景' }}
+            </el-button>
           </div>
         </div>
       </template>
       <el-form label-width="90px">
-        <el-form-item label="请求 URL">
-          <el-input
-            v-model="inputUrl"
-            type="textarea"
-            :rows="5"
-            placeholder="粘贴完整的日志检索页面 URL（含 #/log_search#&logConsoleId=...&logSearchParams=...）"
-          />
-        </el-form-item>
-        <el-form-item label="请求体 JSON">
-          <el-input
-            v-model="inputBody"
-            type="textarea"
-            :rows="10"
-            placeholder='粘贴查询接口的完整请求体 JSON，例如：{ "name": "wallet_client_hmos", "cluster": "...", "filterCondition": { ... } }'
-          />
-        </el-form-item>
+        <template v-if="!editingId">
+          <el-form-item label="请求 URL">
+            <el-input
+              v-model="inputUrl"
+              type="textarea"
+              :rows="5"
+              placeholder="粘贴完整的日志检索页面 URL（含 #/log_search#&logConsoleId=...&logSearchParams=...）"
+            />
+          </el-form-item>
+          <el-form-item label="请求体 JSON">
+            <el-input
+              v-model="inputBody"
+              type="textarea"
+              :rows="10"
+              placeholder='粘贴查询接口的完整请求体 JSON，例如：{ "name": "wallet_client_hmos", "cluster": "...", "filterCondition": { ... } }'
+            />
+          </el-form-item>
+        </template>
       </el-form>
 
       <!-- 解析结果：校验提示 -->
@@ -220,8 +230,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="170" />
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" @click="editScene(row)">编辑</el-button>
             <el-button link type="danger" @click="removeScene(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -241,6 +252,7 @@ const parsing = ref(false);
 const saving = ref(false);
 const loading = ref(false);
 const sceneDraft = ref(null);
+const editingId = ref('');
 const warnings = ref([]);
 const scenes = ref([]);
 
@@ -323,13 +335,41 @@ async function saveScene() {
       method: 'POST',
       body: JSON.stringify({ scene: sceneDraft.value })
     });
-    ElMessage.success('场景已保存');
+    ElMessage.success(editingId.value ? '场景修改已保存' : '场景已保存');
     loadScenes();
+    cancelEdit();
   } catch (e) {
     ElMessage.error(e.message || '保存失败');
   } finally {
     saving.value = false;
   }
+}
+
+/** 编辑已保存场景：加载到草案表单（保留 id，保存时更新） */
+function editScene(row) {
+  sceneDraft.value = JSON.parse(JSON.stringify(row));
+  editingId.value = row.id;
+  warnings.value = [];
+  // 兜底默认值（老数据可能缺字段）
+  if (sceneDraft.value.orderFieldName === undefined) sceneDraft.value.orderFieldName = '';
+  if (sceneDraft.value.orderType === undefined) sceneDraft.value.orderType = '';
+  if (!Array.isArray(sceneDraft.value.focusFields)) sceneDraft.value.focusFields = [];
+  if (!Array.isArray(sceneDraft.value.clusterFields) || !sceneDraft.value.clusterFields.length) {
+    sceneDraft.value.clusterFields = ['walletEventInCode', 'walletEventExtCode'];
+  }
+  if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
+  if (!Array.isArray(sceneDraft.value.statFields)) sceneDraft.value.statFields = [];
+  focusInputVisible.value = false;
+  // 滚动到顶部编辑表单
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/** 取消编辑，恢复新建状态 */
+function cancelEdit() {
+  editingId.value = '';
+  sceneDraft.value = null;
+  warnings.value = [];
+  focusInputVisible.value = false;
 }
 
 async function removeScene(row) {
@@ -390,6 +430,9 @@ onMounted(loadScenes);
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.editing-tag {
+  margin-left: 10px;
 }
 .warn-box {
   margin-bottom: 12px;
