@@ -223,6 +223,9 @@ function importFromSummaries(summaries, scenes, combosByScene = {}) {
     added++;
   }
 
+  // 每个内码/外码值最多导入的组合数（防单码值外码过多导致条目爆炸）
+  const MAX_COMBOS_PER_CODE = 5;
+
   for (const summary of summaries || []) {
     const sceneTitle = summary.scenarioTitle || '';
     const scene = sceneMap.get(sceneTitle);
@@ -233,20 +236,23 @@ function importFromSummaries(summaries, scenes, combosByScene = {}) {
     const combos = Array.isArray(combosByScene[sceneTitle]) ? combosByScene[sceneTitle] : [];
 
     if (combos.length) {
-      // 组合导入：按内码 Top 分组（无内码维度则按外码 Top 分组）选命中数最高的组合
+      // 组合导入：对内码 Top 分组（无内码维度则按外码 Top 分组），
+      // 把该码值下的所有组合（combos 已按命中数降序）都导入，内码+外码同时带出
       const codeGroups = (inDim && inDim.groups) || (exDim && exDim.groups) || [];
       for (const g of codeGroups) {
         const codeValue = String(g.key === '(空)' ? '' : g.key);
         if (!codeValue) continue;
-        const best = inDim
-          ? combos.find((c) => c.inCode === codeValue)
-          : combos.find((c) => c.extCode === codeValue);
-        if (!best) continue;
-        if (exists(sceneId, best.inCode, best.extCode)) {
-          skipped++;
-          continue;
+        const codeMatches = inDim
+          ? combos.filter((c) => c.inCode === codeValue)
+          : combos.filter((c) => c.extCode === codeValue);
+        if (!codeMatches.length) continue;
+        for (const combo of codeMatches.slice(0, MAX_COMBOS_PER_CODE)) {
+          if (exists(sceneId, combo.inCode, combo.extCode)) {
+            skipped++;
+            continue;
+          }
+          pushEntry(sceneId, sceneTitle, combo.inCode, combo.extCode, combo.count);
         }
-        pushEntry(sceneId, sceneTitle, best.inCode, best.extCode, best.count);
       }
       continue;
     }
