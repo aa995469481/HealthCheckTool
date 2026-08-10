@@ -504,6 +504,13 @@ router.delete('/failure-library/:id', (req, res) => {
   res.json({ code: 0, msg: 'ok' });
 });
 
+/* ---------- 12.3.1 巡检失败场景库：全部清理 ---------- */
+router.delete('/failure-library', (req, res) => {
+  const count = failureLibrary.clearAll();
+  logger.info(`[failure-library] clear all -> ${count}`);
+  res.json({ code: 0, msg: 'ok', data: { cleared: count } });
+});
+
 /* ---------- 12.4 巡检失败场景库：从最新聚类摘要一键导入 ---------- */
 router.post('/failure-library/import', (req, res) => {
   try {

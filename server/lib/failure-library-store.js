@@ -104,6 +104,16 @@ function remove(id) {
   return true;
 }
 
+/** 清空全部案例，返回删除条数 */
+function clearAll() {
+  const list = load();
+  const count = list.length;
+  if (count === 0) return 0;
+  save([]);
+  logger.info(`[failure-library] clear all -> ${count}`);
+  return count;
+}
+
 /**
  * 执行巡检后自动更新命中数：统计该场景本次巡检记录中 (内码, 外码) 组合的命中条数，
  * 更新库中同一场景条目的 latestHitCount / lastCheckedAt（组合缺失一端时按单字段统计）
@@ -279,4 +289,4 @@ function aiReferenceText() {
   return lines.join('\n');
 }
 
-module.exports = { list, add, update, remove, updateHitCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields };
+module.exports = { list, add, update, remove, clearAll, updateHitCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields };

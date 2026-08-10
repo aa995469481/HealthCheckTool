@@ -8,10 +8,18 @@
             <el-button size="small" :icon="Download" :loading="importing" @click="importFromAnalysis">
               从聚类摘要一键导入
             </el-button>
-            <el-button size="small" type="primary" :icon="Plus" @click="openAdd">
+            <el-button size="small" :icon="Plus" @click="openAdd">
               新增案例
             </el-button>
             <el-button size="small" :icon="Refresh" @click="loadItems">刷新</el-button>
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :icon="Delete"
+              :disabled="items.length === 0"
+              @click="clearAllItems"
+            >清空全部</el-button>
           </div>
         </div>
       </template>
@@ -106,7 +114,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, Refresh, Download } from '@element-plus/icons-vue';
+import { Plus, Refresh, Download, Delete } from '@element-plus/icons-vue';
 
 const items = ref([]);
 const scenes = ref([]);
@@ -234,6 +242,26 @@ async function removeItem(row) {
     });
     await request(`/api/health-check/failure-library/${row.id}`, { method: 'DELETE' });
     ElMessage.success('已删除');
+    loadItems();
+  } catch (e) {
+    /* 取消不处理 */
+  }
+}
+
+async function clearAllItems() {
+  try {
+    await ElMessageBox.confirm(
+      `确定要清空全部 ${items.value.length} 条失败场景案例吗？此操作不可恢复！`,
+      '清空全部确认',
+      {
+        type: 'warning',
+        confirmButtonText: '全部清空',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger'
+      }
+    );
+    await request('/api/health-check/failure-library', { method: 'DELETE' });
+    ElMessage.success('已清空全部案例');
     loadItems();
   } catch (e) {
     /* 取消不处理 */
