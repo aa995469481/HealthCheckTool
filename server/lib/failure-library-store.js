@@ -147,13 +147,41 @@ function updateHitCounts(scene, records) {
 }
 
 /**
- * 从聚类摘要一键导入：对每个场景，将其「内码/外码」维度的 Top 分组生成案例条目（分析为空，待编辑）
+ * 统计该场景本次巡检记录中「内码+外码」组合的命中数（精确统计，按命中数降序）
+ * 供 export-json 写入聚类摘要（combos），用于一键导入时带出完整组合
+ * @returns {Array<{ inCode: string, extCode: string, count: number }>}
+ */
+function countCombos(scene, records) {
+  if (!scene || !Array.isArray(records)) return [];
+  const { inCodeField, extCodeField } = resolveCodeFields(scene);
+  const comboMap = new Map();
+  for (const r of records) {
+    const inV = fieldValue(r, inCodeField);
+    const exV = fieldValue(r, extCodeField);
+    const key = `${inV}\u0000${exV}`;
+    comboMap.set(key, (comboMap.get(key) || 0) + 1);
+  }
+  return [...comboMap.entries()]
+    .map(([key, count]) => {
+      const [inCode, extCode] = key.split('\u0000');
+      return { inCode, extCode, count };
+    })
+    .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * 从聚类摘要一键导入：优先按「内码+外码」组合生成条目（分析为空，待编辑）
+ *   - 组合数据来自执行巡检时写入的 combos（精确命中数）
+ *   - 有内码维度时：对内码维度 Top 分组，每个内码值选命中数最高的组合导入（外码一并带出）
+ *   - 仅外码维度时：对外码维度 Top 分组，每个外码值选命中数最高的组合导入
+ *   - combos 缺失（旧数据）时回退为仅按维度值导入
  * 已存在同 场景+内码+外码 的条目则跳过
  * @param {Array} summaries 聚类摘要数组（latest.json 的 summaries）
  * @param {Array} scenes 场景列表（用于按标题匹配 sceneId）
+ * @param {Object} combosByScene 场景标题 -> 组合数组（countCombos 结果）
  * @returns {{ added: number, skipped: number }}
  */
-function importFromSummaries(summaries, scenes) {
+function importFromSummaries(summaries, scenes, combosByScene = {}) {
   const sceneMap = new Map((scenes || []).map((s) => [s.title, s]));
   const list = load();
   let added = 0;
@@ -168,14 +196,56 @@ function importFromSummaries(summaries, scenes) {
       return false;
     });
 
+  function pushEntry(sceneId, sceneTitle, inCode, extCode, hitCount) {
+    const now = new Date().toISOString();
+    list.push({
+      id: crypto.randomBytes(8).toString('hex'),
+      sceneId,
+      sceneTitle,
+      inCode,
+      extCode,
+      analysis: '',
+      latestHitCount: hitCount || 0,
+      lastCheckedAt: now,
+      createdAt: now,
+      updatedAt: now
+    });
+    added++;
+  }
+
   for (const summary of summaries || []) {
     const sceneTitle = summary.scenarioTitle || '';
     const scene = sceneMap.get(sceneTitle);
     const sceneId = scene ? scene.id : '';
-    for (const dim of (summary.dimensions || [])) {
+    const dims = summary.dimensions || [];
+    const inDim = dims.find((d) => /incode/i.test(d.field));
+    const exDim = dims.find((d) => /extcode/i.test(d.field));
+    const combos = Array.isArray(combosByScene[sceneTitle]) ? combosByScene[sceneTitle] : [];
+
+    if (combos.length) {
+      // 组合导入：按内码 Top 分组（无内码维度则按外码 Top 分组）选命中数最高的组合
+      const codeGroups = (inDim && inDim.groups) || (exDim && exDim.groups) || [];
+      for (const g of codeGroups) {
+        const codeValue = String(g.key === '(空)' ? '' : g.key);
+        if (!codeValue) continue;
+        const best = inDim
+          ? combos.find((c) => c.inCode === codeValue)
+          : combos.find((c) => c.extCode === codeValue);
+        if (!best) continue;
+        if (exists(sceneId, best.inCode, best.extCode)) {
+          skipped++;
+          continue;
+        }
+        pushEntry(sceneId, sceneTitle, best.inCode, best.extCode, best.count);
+      }
+      continue;
+    }
+
+    // 回退：combos 缺失（旧摘要）时按维度值导入
+    for (const dim of dims) {
       const isInCode = /incode/i.test(dim.field);
       const isExtCode = /extcode/i.test(dim.field);
-      if (!isInCode && !isExtCode) continue; // 仅导入内码/外码维度
+      if (!isInCode && !isExtCode) continue;
       for (const g of (dim.groups || [])) {
         const inCode = isInCode ? String(g.key === '(空)' ? '' : g.key) : '';
         const extCode = isExtCode ? String(g.key === '(空)' ? '' : g.key) : '';
@@ -184,25 +254,12 @@ function importFromSummaries(summaries, scenes) {
           skipped++;
           continue;
         }
-        const now = new Date().toISOString();
-        list.push({
-          id: crypto.randomBytes(8).toString('hex'),
-          sceneId,
-          sceneTitle,
-          inCode,
-          extCode,
-          analysis: '',
-          latestHitCount: g.count || 0,
-          lastCheckedAt: now,
-          createdAt: now,
-          updatedAt: now
-        });
-        added++;
+        pushEntry(sceneId, sceneTitle, inCode, extCode, g.count || 0);
       }
     }
   }
   if (added > 0) save(list);
-  logger.info(`[failure-library] import added=${added} skipped=${skipped}`);
+  logger.info(`[failure-library] import added=${added} skipped=${skipped} scenes=${summaries.length}`);
   return { added, skipped };
 }
 
@@ -222,4 +279,4 @@ function aiReferenceText() {
   return lines.join('\n');
 }
 
-module.exports = { list, add, update, remove, updateHitCounts, importFromSummaries, aiReferenceText, resolveCodeFields };
+module.exports = { list, add, update, remove, updateHitCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields };

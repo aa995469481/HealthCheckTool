@@ -240,6 +240,12 @@ router.post('/export-json', async (req, res) => {
     if (!fs.existsSync(analysisDir)) fs.mkdirSync(analysisDir, { recursive: true });
     const summaries = excelScenarios.map(({ scene, records }) => clusterSummary.buildClusterSummary(scene, records));
     const markdownTexts = summaries.map((s) => clusterSummary.toMarkdown(s));
+    // 精确统计「内码+外码」组合命中数，供失败场景库一键导入带出完整组合
+    const combosByScene = {};
+    for (const { scene, records } of excelScenarios) {
+      const combos = failureLibrary.countCombos(scene, records);
+      if (combos.length) combosByScene[scene.title] = combos;
+    }
     const analysisFile = path.join(analysisDir, `cluster-${Date.now()}.json`);
     const analysisData = {
       createdAt: new Date().toISOString(),
@@ -249,7 +255,8 @@ router.post('/export-json', async (req, res) => {
       beginTimestamp: profile.beginTimestamp || '',
       endTimestamp: profile.endTimestamp || '',
       summaries,
-      markdownTexts
+      markdownTexts,
+      combosByScene
     };
     fs.writeFileSync(analysisFile, JSON.stringify(analysisData, null, 2), 'utf-8');
     // 固定名 latest.json，供页面展示读取
@@ -506,7 +513,7 @@ router.post('/failure-library/import', (req, res) => {
     }
     const analysisData = JSON.parse(fs.readFileSync(analysisFile, 'utf-8'));
     const scenes = sceneStore.listScenes();
-    const result = failureLibrary.importFromSummaries(analysisData.summaries || [], scenes);
+    const result = failureLibrary.importFromSummaries(analysisData.summaries || [], scenes, analysisData.combosByScene || {});
     logger.info(`[failure-library] import result=${JSON.stringify(result)}`);
     res.json({ code: 0, msg: 'ok', data: result });
   } catch (e) {
