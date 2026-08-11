@@ -33,7 +33,7 @@
       <input ref="fileInputRef" type="file" accept=".csv,text/csv" style="display: none" @change="onFileChange" />
 
       <div class="library-hint">
-        按「场景 + 内码 + 外码」维护失败案例分析（根因 / 影响 / 处置建议）。每次执行巡检后自动更新「最近命中」条数；生成 AI 巡检日报时，仅「已分析 / 已闭环」且有分析的案例会作为参考喂给大模型。
+        按「场景 + 内码 + 外码」维护失败案例分析（根因 / 影响 / 处置建议）。每次执行巡检后自动更新「用户数量」（该组合本次巡检命中的去重用户数，按 uid 去重）；生成 AI 巡检日报时，仅「已分析 / 已闭环」且有分析的案例会作为参考喂给大模型。
       </div>
 
       <div class="filter-bar">
@@ -87,10 +87,10 @@
             <el-tag v-else size="small" type="info" effect="plain">待补充</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近命中" width="100" align="center">
+        <el-table-column label="用户数量(uid)" width="110">
           <template #default="{ row }">
-            <el-tag :type="row.latestHitCount > 0 ? 'danger' : 'info'" size="small" effect="plain">
-              {{ row.latestHitCount || 0 }}
+            <el-tag :type="row.latestUserCount > 0 ? 'danger' : 'info'" size="small" effect="plain">
+              {{ row.latestUserCount || 0 }}
             </el-tag>
           </template>
         </el-table-column>

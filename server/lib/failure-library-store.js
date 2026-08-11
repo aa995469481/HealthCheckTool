@@ -5,7 +5,7 @@
  *   - 每条案例 = 场景 + 内码(inCode) + 外码(extCode) + 案例分析文本（根因/影响/处置建议）
  *   - 2026-08-10 新增维护字段：问题类别 category（端侧问题/SP问题/云侧问题/非问题/待确认，默认 待确认）、
  *     问题状态 status（待确认/已分析/已闭环，默认 待确认）、卡维度 cardDimension（自由字符串或 All，默认 All）
- *   - 统计：执行巡检后自动统计该组合在本次巡检中的命中条数，记录 latestHitCount（不手动维护）
+ *   - 统计：执行巡检后自动统计该组合在本次巡检中命中的去重用户数（按 uid 去重），记录 latestUserCount（不手动维护）
  *   - 录入：手动新增/编辑 + 从聚类摘要维度 Top 分组一键导入 + CSV 文件导出/导入（按 场景+内码+外码 覆盖更新）
  *   - 供 AI 日报生成：aiReferenceText() 仅引用「已分析/已闭环」且有分析文本的案例，喂给汇总调用
  */
@@ -32,20 +32,25 @@ const normalizeCard = (v) => {
 };
 
 /** CSV 表头（导出/导入共用，列顺序固定） */
-const CSV_HEADERS = ['场景', '内码', '外码', '卡维度', '问题类别', '问题状态', '案例分析', '最近命中', '最近检查', '更新时间'];
+const CSV_HEADERS = ['场景', '内码', '外码', '卡维度', '问题类别', '问题状态', '案例分析', '最近用户数', '最近检查', '更新时间'];
 
 function load() {
   try {
     if (!fs.existsSync(FILE)) return [];
     const arr = JSON.parse(fs.readFileSync(FILE, 'utf-8'));
     const result = Array.isArray(arr) ? arr : [];
-    // 旧数据迁移：默认待确认 -> 待确认；卡维度 NA -> All；缺失字段补默认值
+    // 旧数据迁移：默认待确认 -> 待确认；卡维度 NA -> All；latestHitCount -> latestUserCount；缺失字段补默认值
     let changed = false;
     for (const it of result) {
       if (!it.category || it.category === '默认待确认') { it.category = DEFAULT_CATEGORY; changed = true; }
       else if (!CATEGORY_ENUM.includes(it.category)) { it.category = DEFAULT_CATEGORY; changed = true; }
       if (!it.status) { it.status = DEFAULT_STATUS; changed = true; }
       if (!it.cardDimension || it.cardDimension === 'NA') { it.cardDimension = DEFAULT_CARD; changed = true; }
+      if (it.latestUserCount === undefined && it.latestHitCount !== undefined) {
+        it.latestUserCount = it.latestHitCount;
+        delete it.latestHitCount;
+        changed = true;
+      }
     }
     if (changed) save(result);
     return result;
@@ -98,7 +103,7 @@ function add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status,
     category: normalizeCategory(category),
     status: normalizeStatus(status),
     cardDimension: normalizeCard(cardDimension),
-    latestHitCount: 0,
+    latestUserCount: 0,
     lastCheckedAt: '',
     createdAt: now,
     updatedAt: now
@@ -151,66 +156,76 @@ function clearAll() {
 }
 
 /**
- * 执行巡检后自动更新命中数：统计该场景本次巡检记录中 (内码, 外码) 组合的命中条数，
- * 更新库中同一场景条目的 latestHitCount / lastCheckedAt（组合缺失一端时按单字段统计）
+ * 执行巡检后自动更新用户数量：统计该场景本次巡检记录中 (内码, 外码) 组合命中的去重用户数（按 uid 去重，无 uid 的记录不计入），
+ * 更新库中同一场景条目的 latestUserCount / lastCheckedAt（组合缺失一端时按单字段统计）
  * @returns {number} 更新条数
  */
-function updateHitCounts(scene, records) {
+function updateUserCounts(scene, records) {
   if (!scene || !Array.isArray(records)) return 0;
   const { inCodeField, extCodeField } = resolveCodeFields(scene);
-  const comboMap = new Map();
-  const inMap = new Map();
-  const extMap = new Map();
+  const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
+  const inUsers = new Map();    // inV -> Set(uid)
+  const extUsers = new Map();   // exV -> Set(uid)
   for (const r of records) {
     const inV = fieldValue(r, inCodeField);
     const exV = fieldValue(r, extCodeField);
-    comboMap.set(`${inV}\u0000${exV}`, (comboMap.get(`${inV}\u0000${exV}`) || 0) + 1);
-    inMap.set(inV, (inMap.get(inV) || 0) + 1);
-    extMap.set(exV, (extMap.get(exV) || 0) + 1);
+    const uid = fieldValue(r, 'uid');
+    if (uid === '') continue; // 无 uid 无法归属用户，不计入
+    const comboKey = `${inV}\u0000${exV}`;
+    if (!comboUsers.has(comboKey)) comboUsers.set(comboKey, new Set());
+    comboUsers.get(comboKey).add(uid);
+    if (!inUsers.has(inV)) inUsers.set(inV, new Set());
+    inUsers.get(inV).add(uid);
+    if (!extUsers.has(exV)) extUsers.set(exV, new Set());
+    extUsers.get(exV).add(uid);
   }
 
+  const emptySet = new Set();
   const list = load();
   let updated = 0;
   for (const c of list) {
     if (c.sceneId !== scene.id) continue;
     let count = 0;
     if (c.inCode && c.extCode) {
-      count = comboMap.get(`${c.inCode}\u0000${c.extCode}`) || 0;
+      count = (comboUsers.get(`${c.inCode}\u0000${c.extCode}`) || emptySet).size;
     } else if (c.inCode) {
-      count = inMap.get(c.inCode) || 0;
+      count = (inUsers.get(c.inCode) || emptySet).size;
     } else if (c.extCode) {
-      count = extMap.get(c.extCode) || 0;
+      count = (extUsers.get(c.extCode) || emptySet).size;
     }
-    if (c.latestHitCount !== count) c.latestHitCount = count;
+    if (c.latestUserCount !== count) c.latestUserCount = count;
     c.lastCheckedAt = new Date().toISOString();
     updated++;
   }
   if (updated > 0) {
     save(list);
-    logger.info(`[failure-library] hit counts updated scene=${scene.id} updated=${updated}`);
+    logger.info(`[failure-library] user counts updated scene=${scene.id} updated=${updated}`);
   }
   return updated;
 }
 
 /**
- * 统计该场景本次巡检记录中「内码+外码」组合的命中数（精确统计，按命中数降序）
+ * 统计该场景本次巡检记录中「内码+外码」组合命中的去重用户数（按 uid 去重，精确统计，按数量降序）
  * 供 export-json 写入聚类摘要（combos），用于一键导入时带出完整组合
  * @returns {Array<{ inCode: string, extCode: string, count: number }>}
  */
 function countCombos(scene, records) {
   if (!scene || !Array.isArray(records)) return [];
   const { inCodeField, extCodeField } = resolveCodeFields(scene);
-  const comboMap = new Map();
+  const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
   for (const r of records) {
     const inV = fieldValue(r, inCodeField);
     const exV = fieldValue(r, extCodeField);
+    const uid = fieldValue(r, 'uid');
+    if (uid === '') continue;
     const key = `${inV}\u0000${exV}`;
-    comboMap.set(key, (comboMap.get(key) || 0) + 1);
+    if (!comboUsers.has(key)) comboUsers.set(key, new Set());
+    comboUsers.get(key).add(uid);
   }
-  return [...comboMap.entries()]
-    .map(([key, count]) => {
+  return [...comboUsers.entries()]
+    .map(([key, users]) => {
       const [inCode, extCode] = key.split('\u0000');
-      return { inCode, extCode, count };
+      return { inCode, extCode, count: users.size };
     })
     .sort((a, b) => b.count - a.count);
 }
@@ -254,7 +269,7 @@ function importFromSummaries(summaries, scenes, combosByScene = {}) {
       category: DEFAULT_CATEGORY,
       status: DEFAULT_STATUS,
       cardDimension: DEFAULT_CARD,
-      latestHitCount: hitCount || 0,
+      latestUserCount: hitCount || 0,
       lastCheckedAt: now,
       createdAt: now,
       updatedAt: now
@@ -330,7 +345,7 @@ function aiReferenceText() {
   const lines = list.slice(0, 20).map((c, i) => {
     const scene = c.sceneTitle || '未命名场景';
     const code = `${c.inCode || '-'}${c.extCode ? ' / ' + c.extCode : ''}`;
-    const hit = c.latestHitCount > 0 ? `（最近巡检命中 ${c.latestHitCount} 条）` : '';
+    const hit = c.latestUserCount > 0 ? `（最近巡检 ${c.latestUserCount} 个用户）` : '';
     return `${i + 1}. [${scene}] 内码+外码=${code}${hit}：${String(c.analysis).slice(0, 500)}`;
   });
   return lines.join('\n');
@@ -353,7 +368,7 @@ function exportCsv() {
     c.category || DEFAULT_CATEGORY,
     c.status || DEFAULT_STATUS,
     c.analysis || '',
-    c.latestHitCount || 0,
+    c.latestUserCount || 0,
     c.lastCheckedAt || '',
     c.updatedAt || ''
   ]);
@@ -417,7 +432,9 @@ function importCsv(text) {
   const iCat = col('问题类别');
   const iStatus = col('问题状态');
   const iAnalysis = col('案例分析');
-  const iHit = col('最近命中');
+  // 兼容旧版导出的 CSV（列名「最近命中」）
+  let iHit = col('最近用户数');
+  if (iHit < 0) iHit = col('最近命中');
   if (iScene < 0) throw new Error('CSV 缺少「场景」列，请使用导出的 CSV 模板格式');
   if (iIn < 0 && iExt < 0) throw new Error('CSV 至少需要「内码」或「外码」列');
 
@@ -452,7 +469,7 @@ function importCsv(text) {
       if (patch.analysis !== '') exist.analysis = patch.analysis;
       if (!exist.sceneId && scene) exist.sceneId = scene.id;
       const hit = Number(get(iHit));
-      if (!isNaN(hit) && hit > 0) exist.latestHitCount = hit;
+      if (!isNaN(hit) && hit > 0) exist.latestUserCount = hit;
       exist.updatedAt = now;
       updated++;
     } else {
@@ -466,7 +483,7 @@ function importCsv(text) {
         category: patch.category,
         status: patch.status,
         cardDimension: patch.cardDimension,
-        latestHitCount: 0,
+        latestUserCount: 0,
         lastCheckedAt: '',
         createdAt: now,
         updatedAt: now
@@ -479,4 +496,4 @@ function importCsv(text) {
   return { added, updated, skipped };
 }
 
-module.exports = { list, add, update, remove, clearAll, updateHitCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields, exportCsv, importCsv };
+module.exports = { list, add, update, remove, clearAll, updateUserCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields, exportCsv, importCsv };

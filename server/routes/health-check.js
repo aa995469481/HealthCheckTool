@@ -217,9 +217,9 @@ router.post('/export-json', async (req, res) => {
       });
       queryResults.set(id, q);
       logger.info(`[export] scenario=${id} done total=${q.total} fetched=${q.records.length} pages=${q.pages}`);
-      // 自动更新失败场景库命中数（该场景下内码+外码组合本次巡检命中条数）
-      const hitUpdated = failureLibrary.updateHitCounts(scene, q.records);
-      if (hitUpdated > 0) logger.info(`[export] failure-library hits updated=${hitUpdated} scenario=${id}`);
+      // 自动更新失败场景库用户数量（该场景下内码+外码组合本次巡检命中的去重用户数，按 uid 去重）
+      const hitUpdated = failureLibrary.updateUserCounts(scene, q.records);
+      if (hitUpdated > 0) logger.info(`[export] failure-library users updated=${hitUpdated} scenario=${id}`);
     }
 
     if (queryResults.size === 0) {
