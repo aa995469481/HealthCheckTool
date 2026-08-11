@@ -185,9 +185,17 @@
       <template #header>
         <div class="card-header">
           <span>已保存场景（{{ scenes.length }}）</span>
-          <el-button size="small" :icon="Refresh" @click="loadScenes">刷新</el-button>
+          <div class="card-actions">
+            <el-button size="small" :icon="Download" :loading="exporting" @click="exportScenes">导出 JSON</el-button>
+            <el-button size="small" :icon="Upload" :loading="importing" @click="pickImportFile">导入 JSON</el-button>
+            <el-button size="small" :icon="Refresh" @click="loadScenes">刷新</el-button>
+          </div>
         </div>
       </template>
+      <input ref="fileInputRef" type="file" accept=".json,application/json" style="display: none" @change="onFileChange" />
+      <div class="import-hint">
+        导入为 JSON 文件（巡检场景管理「导出 JSON」生成）：按「场景标题」匹配，已存在则覆盖更新（保留原 ID 与失败场景库的关联），不存在则新增
+      </div>
       <el-table :data="scenes" stripe v-loading="loading">
         <el-table-column prop="title" label="场景标题" min-width="200" show-overflow-tooltip />
         <el-table-column prop="table" label="表名" width="160" />
@@ -243,13 +251,16 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Refresh, CircleCheck } from '@element-plus/icons-vue';
+import { Search, Refresh, CircleCheck, Download, Upload } from '@element-plus/icons-vue';
 
 const inputUrl = ref('');
 const inputBody = ref('');
 const parsing = ref(false);
 const saving = ref(false);
 const loading = ref(false);
+const exporting = ref(false);
+const importing = ref(false);
+const fileInputRef = ref();
 const sceneDraft = ref(null);
 const editingId = ref('');
 const warnings = ref([]);
@@ -279,6 +290,68 @@ async function loadScenes() {
   } finally {
     loading.value = false;
   }
+}
+
+/** 导出全部场景为 JSON 文件下载 */
+async function exportScenes() {
+  exporting.value = true;
+  try {
+    const res = await fetch('/api/health-check/scenes/export');
+    if (!res.ok) throw new Error(`导出失败（HTTP ${res.status}）`);
+    const blob = await res.blob();
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const fname = `inspection-scenes-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(url);
+    ElMessage.success(`已导出 ${scenes.value.length} 个场景`);
+  } catch (e) {
+    ElMessage.error(e.message || '导出失败');
+  } finally {
+    exporting.value = false;
+  }
+}
+
+function pickImportFile() {
+  fileInputRef.value && fileInputRef.value.click();
+}
+
+/** 选择 JSON 文件后读取并导入（按场景标题覆盖更新） */
+function onFileChange(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  if (!/\.json$/i.test(file.name)) {
+    ElMessage.warning('请选择 JSON 文件');
+    e.target.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    importing.value = true;
+    try {
+      const data = await request('/api/health-check/scenes/import', {
+        method: 'POST',
+        body: JSON.stringify({ content: reader.result })
+      });
+      ElMessage.success(`导入完成：新增 ${data.added} 个，更新 ${data.updated} 个，跳过 ${data.skipped} 个`);
+      loadScenes();
+    } catch (err) {
+      ElMessage.error(err.message || '导入失败');
+    } finally {
+      importing.value = false;
+      e.target.value = '';
+    }
+  };
+  reader.onerror = () => {
+    importing.value = false;
+    ElMessage.error('读取文件失败');
+    e.target.value = '';
+  };
+  reader.readAsText(file, 'utf-8');
 }
 
 async function parseScene() {
@@ -498,6 +571,11 @@ onMounted(loadScenes);
   font-size: 12px;
   color: #909399;
   margin-top: 6px;
+}
+.import-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
 }
 .cluster-fields {
   display: flex;

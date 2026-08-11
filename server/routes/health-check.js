@@ -152,6 +152,36 @@ router.delete('/scenes/:id', (req, res) => {
   res.json({ code: 0, msg: 'ok' });
 });
 
+/* ---------- 2.4 巡检场景管理：导出全部场景为 JSON 文件 ---------- */
+router.get('/scenes/export', (req, res) => {
+  try {
+    const json = sceneStore.exportJson();
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const fname = `inspection-scenes-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=${fname}`);
+    res.send(json);
+  } catch (e) {
+    logger.error('[scenes] export failed', e);
+    res.json({ code: 1, msg: '导出失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 2.5 巡检场景管理：从 JSON 文件导入（按标题覆盖更新） ---------- */
+router.post('/scenes/import', (req, res) => {
+  const { content } = req.body || {};
+  try {
+    if (!content || !String(content).trim()) return res.json({ code: 1, msg: '未收到文件内容' });
+    const result = sceneStore.importJson(String(content));
+    logger.info(`[scenes] import result=${JSON.stringify(result)}`);
+    res.json({ code: 0, msg: 'ok', data: result });
+  } catch (e) {
+    logger.error('[scenes] import failed', e);
+    res.json({ code: 1, msg: '导入失败：' + (e.message || '未知错误') });
+  }
+});
+
 /* ---------- 3. 巡检计划：列表 ---------- */
 router.get('/inspection-profiles', (req, res) => {
   const profiles = profileStore.listProfiles();

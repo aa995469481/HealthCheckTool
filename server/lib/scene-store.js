@@ -82,4 +82,75 @@ function getScene(id) {
   return listScenes().find((s) => s.id === id) || null;
 }
 
-module.exports = { listScenes, saveScene, deleteScene, getScene, SCENES_FILE };
+/* ---------- 场景导出 / 导入（JSON 无损，按标题覆盖更新） ---------- */
+
+/** 导入前归一化场景字段（过滤非法/空值，保证结构可用） */
+function normalizeScene(raw) {
+  const s = raw || {};
+  return {
+    title: String(s.title || '').trim(),
+    table: String(s.table || '').trim(),
+    cluster: String(s.cluster || '').trim(),
+    queryString: String(s.queryString || '').trim(),
+    granularity: Number.isFinite(Number(s.granularity)) ? Number(s.granularity) : 0,
+    dataSourceServiceId: String(s.dataSourceServiceId || '').trim(),
+    orderFieldName: String(s.orderFieldName || '').trim(),
+    orderType: s.orderType === 'asc' || s.orderType === 'desc' ? s.orderType : '',
+    focusFields: Array.isArray(s.focusFields) ? s.focusFields.map((x) => String(x).trim()).filter(Boolean) : [],
+    filterCondition: s.filterCondition && typeof s.filterCondition === 'object' ? s.filterCondition : {},
+    clusterFields: Array.isArray(s.clusterFields) ? s.clusterFields.map((x) => String(x).trim()).filter(Boolean) : [],
+    clusterSubFields: s.clusterSubFields && typeof s.clusterSubFields === 'object' ? s.clusterSubFields : {},
+    clusterStatFields: s.clusterStatFields && typeof s.clusterStatFields === 'object' ? s.clusterStatFields : {}
+  };
+}
+
+/** 导出全部场景为 JSON 字符串（含 id/createdAt，便于完整往返） */
+function exportJson() {
+  const scenes = listScenes();
+  const payload = { version: 1, exportedAt: formatTime(), scenes };
+  logger.info(`[scenes] export count=${scenes.length}`);
+  return JSON.stringify(payload, null, 2);
+}
+
+/**
+ * 从 JSON 导入场景（与用户确认，2026-08-10）：
+ * 按「场景标题」匹配，已存在则覆盖更新（保留原 id 与 createdAt，维持与失败场景库的 sceneId 关联），不存在则新增
+ * @param {string|object} json JSON 字符串或已解析对象（支持 scenes 数组或直接数组）
+ * @returns {{ added: number, updated: number, skipped: number }}
+ */
+function importJson(json) {
+  let data;
+  try {
+    data = typeof json === 'string' ? JSON.parse(json) : json;
+  } catch (e) {
+    throw new Error('JSON 解析失败：' + e.message);
+  }
+  const arr = Array.isArray(data) ? data : (data && Array.isArray(data.scenes) ? data.scenes : null);
+  if (!arr) throw new Error('JSON 内容不是场景数组（期望 scenes 数组）');
+  const scenes = listScenes();
+  const byTitle = new Map(scenes.map((s) => [s.title, s]));
+  let added = 0, updated = 0, skipped = 0;
+  for (const raw of arr) {
+    const scene = normalizeScene(raw);
+    if (!scene.title) { skipped++; continue; }
+    const exist = byTitle.get(scene.title);
+    if (exist) {
+      Object.assign(exist, scene); // 保留原 id / createdAt
+      updated++;
+    } else {
+      const created = {
+        ...scene,
+        id: crypto.randomBytes(8).toString('hex'),
+        createdAt: formatTime()
+      };
+      scenes.push(created);
+      byTitle.set(scene.title, created);
+      added++;
+    }
+  }
+  writeScenes(scenes);
+  logger.info(`[scenes] import added=${added} updated=${updated} skipped=${skipped}`);
+  return { added, updated, skipped };
+}
+
+module.exports = { listScenes, saveScene, deleteScene, getScene, exportJson, importJson, SCENES_FILE };
