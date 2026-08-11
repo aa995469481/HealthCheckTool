@@ -13,6 +13,7 @@
  * 产出：结构化 JSON（前端多维度表格 + 大模型分析共用），并附 toMarkdown() 文本供喂模型
  */
 const { logger } = require('./logger');
+const failureLibrary = require('./failure-library-store');
 
 /* ---------- 字段容错解析 ---------- */
 
@@ -133,8 +134,14 @@ function buildClusterSummary(scene, records) {
     const arr = per || (scene && Array.isArray(scene.statFields) && scene.statFields.length ? scene.statFields : []);
     return arr.map(String).filter((f) => focusFields.includes(f));
   };
-  const total = Array.isArray(records) ? records.length : 0;
-  const allRecords = records || [];
+  // 剔除失败场景库中已确认「非问题」的记录（匹配 场景+内码+外码+卡维度），不影响失败场景库数据
+  const isNonProblem = failureLibrary.buildNonProblemFilter(scene);
+  const allRecords = isNonProblem ? (records || []).filter((r) => !isNonProblem(r)) : (records || []);
+  const total = allRecords.length;
+  const excludedCount = (Array.isArray(records) ? records.length : 0) - total;
+  if (excludedCount > 0) {
+    logger.info(`[cluster] excluded non-problem records=${excludedCount} scene=${scene && scene.title} total=${total}`);
+  }
 
   // 对单个字段做一级分组统计，可带二级下钻字段；statFields 为该维度独立配置的统计展示列
   function buildDimension(field, subField, statFields) {

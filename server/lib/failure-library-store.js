@@ -84,9 +84,14 @@ function fieldValue(record, field) {
   return v === null || v === undefined ? '' : String(v);
 }
 
-/** 全部案例（按更新时间倒序） */
+/** 全部案例（按用户数量降序，用户数量相同按更新时间倒序） */
 function list() {
-  return load().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  return load().sort((a, b) => {
+    const ua = a.latestUserCount || 0;
+    const ub = b.latestUserCount || 0;
+    if (ua !== ub) return ub - ua;
+    return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+  });
 }
 
 /** 新增案例 */
@@ -156,17 +161,49 @@ function clearAll() {
 }
 
 /**
+ * 构建「已确认问题类别=非问题」记录的剔除匹配器（供聚类摘要 / 用户数统计共用）
+ * 匹配规则（与用户确认，2026-08-10）：
+ *   - 场景：条目 sceneId 与场景 id 一致（条目缺 sceneId 时按场景标题兜底）
+ *   - 内码 / 外码：条目有值则与记录对应字段完全一致才满足
+ *   - 卡维度：条目 cardDimension = All 则任意记录满足；否则记录 issueID 与 cardDimension 完全一致才满足
+ * @param {object} scene 巡检场景 { id, title, clusterFields }
+ * @returns {function|null} 匹配函数（命中返回 true，该记录应被剔除）；无非问题条目时返回 null
+ */
+function buildNonProblemFilter(scene) {
+  const nonProblem = load().filter((c) => c.category === '非问题');
+  if (!nonProblem.length) return null;
+  const { inCodeField, extCodeField } = resolveCodeFields(scene);
+  const sceneId = scene && scene.id ? String(scene.id) : '';
+  const sceneTitle = scene && scene.title ? String(scene.title) : '';
+  return (record) => {
+    const inV = fieldValue(record, inCodeField);
+    const exV = fieldValue(record, extCodeField);
+    const issueId = fieldValue(record, 'issueID');
+    return nonProblem.some((c) => {
+      if (c.sceneId ? c.sceneId !== sceneId : c.sceneTitle !== sceneTitle) return false;
+      if (c.inCode && c.inCode !== inV) return false;
+      if (c.extCode && c.extCode !== exV) return false;
+      if (c.cardDimension && c.cardDimension !== 'All' && c.cardDimension !== issueId) return false;
+      return true;
+    });
+  };
+}
+
+/**
  * 执行巡检后自动更新用户数量：统计该场景本次巡检记录中 (内码, 外码) 组合命中的去重用户数（按 uid 去重，无 uid 的记录不计入），
  * 更新库中同一场景条目的 latestUserCount / lastCheckedAt（组合缺失一端时按单字段统计）
+ * 已确认「非问题」的记录（buildNonProblemFilter 命中）不参与统计
  * @returns {number} 更新条数
  */
 function updateUserCounts(scene, records) {
   if (!scene || !Array.isArray(records)) return 0;
   const { inCodeField, extCodeField } = resolveCodeFields(scene);
+  const isNonProblem = buildNonProblemFilter(scene);
   const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
   const inUsers = new Map();    // inV -> Set(uid)
   const extUsers = new Map();   // exV -> Set(uid)
   for (const r of records) {
+    if (isNonProblem && isNonProblem(r)) continue; // 已确认非问题的记录剔除
     const inV = fieldValue(r, inCodeField);
     const exV = fieldValue(r, extCodeField);
     const uid = fieldValue(r, 'uid');
@@ -206,14 +243,17 @@ function updateUserCounts(scene, records) {
 
 /**
  * 统计该场景本次巡检记录中「内码+外码」组合命中的去重用户数（按 uid 去重，精确统计，按数量降序）
+ * 已确认「非问题」的记录不参与统计
  * 供 export-json 写入聚类摘要（combos），用于一键导入时带出完整组合
  * @returns {Array<{ inCode: string, extCode: string, count: number }>}
  */
 function countCombos(scene, records) {
   if (!scene || !Array.isArray(records)) return [];
   const { inCodeField, extCodeField } = resolveCodeFields(scene);
+  const isNonProblem = buildNonProblemFilter(scene);
   const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
   for (const r of records) {
+    if (isNonProblem && isNonProblem(r)) continue; // 已确认非问题的记录剔除
     const inV = fieldValue(r, inCodeField);
     const exV = fieldValue(r, extCodeField);
     const uid = fieldValue(r, 'uid');
@@ -496,4 +536,4 @@ function importCsv(text) {
   return { added, updated, skipped };
 }
 
-module.exports = { list, add, update, remove, clearAll, updateUserCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields, exportCsv, importCsv };
+module.exports = { list, add, update, remove, clearAll, updateUserCounts, countCombos, importFromSummaries, aiReferenceText, resolveCodeFields, buildNonProblemFilter, exportCsv, importCsv };
