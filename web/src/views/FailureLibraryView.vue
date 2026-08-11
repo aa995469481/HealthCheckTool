@@ -46,7 +46,7 @@
         <el-select v-model="filters.status" placeholder="全部状态" clearable size="small" style="width: 120px">
           <el-option v-for="s in STATUS_OPTIONS" :key="s" :label="s" :value="s" />
         </el-select>
-        <el-input v-model="filters.cardDimension" placeholder="卡维度（如 All / NA）" clearable size="small" style="width: 150px" />
+        <el-input v-model="filters.cardDimension" placeholder="卡维度（如 All）" clearable size="small" style="width: 150px" />
         <el-input v-model="filters.keyword" placeholder="内码/外码/分析关键词" clearable size="small" style="width: 200px" />
         <el-button size="small" :icon="Refresh" @click="resetFilters">重置</el-button>
         <span class="filter-count">共 {{ filteredItems.length }} / {{ items.length }} 条</span>
@@ -68,12 +68,12 @@
         </el-table-column>
         <el-table-column label="卡维度" width="110">
           <template #default="{ row }">
-            <span>{{ row.cardDimension || 'NA' }}</span>
+            <span>{{ row.cardDimension || 'All' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="问题类别" width="120">
           <template #default="{ row }">
-            <el-tag size="small" :type="categoryTagType(row.category)" effect="plain">{{ row.category || '默认待确认' }}</el-tag>
+            <el-tag size="small" :type="categoryTagType(row.category)" effect="plain">{{ row.category || '待确认' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="问题状态" width="100">
@@ -144,7 +144,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="卡维度">
-          <el-input v-model="form.cardDimension" placeholder="如 All 或具体卡维度，默认 NA" style="width: 260px" />
+          <el-input v-model="form.cardDimension" placeholder="如 All 或具体卡维度，默认 All" style="width: 260px" />
         </el-form-item>
         <el-form-item label="案例分析">
           <el-input
@@ -168,7 +168,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Refresh, Download, Delete, Upload } from '@element-plus/icons-vue';
 
-const CATEGORY_OPTIONS = ['端侧问题', 'SP问题', '云侧问题', '默认待确认'];
+const CATEGORY_OPTIONS = ['端侧问题', 'SP问题', '云侧问题', '非问题', '待确认'];
 const STATUS_OPTIONS = ['待确认', '已分析', '已闭环'];
 
 const items = ref([]);
@@ -179,14 +179,14 @@ const saving = ref(false);
 const dialogVisible = ref(false);
 const editingId = ref('');
 const fileInputRef = ref();
-const form = reactive({ sceneId: '', sceneTitle: '', inCode: '', extCode: '', category: '默认待确认', status: '待确认', cardDimension: 'NA', analysis: '' });
+const form = reactive({ sceneId: '', sceneTitle: '', inCode: '', extCode: '', category: '待确认', status: '待确认', cardDimension: 'All', analysis: '' });
 const filters = reactive({ scene: '', category: '', status: '', cardDimension: '', keyword: '' });
 
 /** 列表过滤：场景 / 问题类别 / 问题状态 / 卡维度 / 关键词（内码+外码+分析） */
 const filteredItems = computed(() =>
   items.value.filter((it) => {
     if (filters.scene && it.sceneTitle !== filters.scene) return false;
-    if (filters.category && (it.category || '默认待确认') !== filters.category) return false;
+    if (filters.category && (it.category || '待确认') !== filters.category) return false;
     if (filters.status && (it.status || '待确认') !== filters.status) return false;
     if (filters.cardDimension && !String(it.cardDimension || '').toLowerCase().includes(filters.cardDimension.trim().toLowerCase())) return false;
     if (filters.keyword) {
@@ -199,7 +199,7 @@ const filteredItems = computed(() =>
 );
 
 function categoryTagType(cat) {
-  return { '端侧问题': 'warning', 'SP问题': 'primary', '云侧问题': 'success', '默认待确认': 'info' }[cat || '默认待确认'] || 'info';
+  return { '端侧问题': 'warning', 'SP问题': 'primary', '云侧问题': 'success', '非问题': 'info', '待确认': 'danger' }[cat || '待确认'] || 'danger';
 }
 function statusTagType(st) {
   return { '待确认': 'info', '已分析': 'warning', '已闭环': 'success' }[st || '待确认'] || 'info';
@@ -258,9 +258,9 @@ function resetForm() {
   form.sceneTitle = '';
   form.inCode = '';
   form.extCode = '';
-  form.category = '默认待确认';
+  form.category = '待确认';
   form.status = '待确认';
-  form.cardDimension = 'NA';
+  form.cardDimension = 'All';
   form.analysis = '';
 }
 
@@ -280,9 +280,9 @@ function openEdit(row) {
   form.sceneTitle = row.sceneTitle || '';
   form.inCode = row.inCode || '';
   form.extCode = row.extCode || '';
-  form.category = row.category || '默认待确认';
+  form.category = row.category || '待确认';
   form.status = row.status || '待确认';
-  form.cardDimension = row.cardDimension || 'NA';
+  form.cardDimension = row.cardDimension || 'All';
   form.analysis = row.analysis || '';
   dialogVisible.value = true;
 }

@@ -13,10 +13,6 @@
         text-color="rgba(255, 255, 255, 0.65)"
         active-text-color="#ffffff"
       >
-        <el-menu-item index="/tasks">
-          <el-icon><List /></el-icon>
-          <span>巡检任务管理</span>
-        </el-menu-item>
         <el-menu-item index="/health-check-export">
           <el-icon><DataAnalysis /></el-icon>
           <span>业务巡检</span>

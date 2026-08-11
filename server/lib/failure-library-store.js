@@ -3,8 +3,8 @@
  *
  * 设计（与用户确认，2026-08-08 / 2026-08-10 补充字段）：
  *   - 每条案例 = 场景 + 内码(inCode) + 外码(extCode) + 案例分析文本（根因/影响/处置建议）
- *   - 2026-08-10 新增维护字段：问题类别 category（端侧问题/SP问题/云侧问题/默认待确认，默认 默认待确认）、
- *     问题状态 status（待确认/已分析/已闭环，默认 待确认）、卡维度 cardDimension（自由字符串或 All，默认 NA）
+ *   - 2026-08-10 新增维护字段：问题类别 category（端侧问题/SP问题/云侧问题/非问题/待确认，默认 待确认）、
+ *     问题状态 status（待确认/已分析/已闭环，默认 待确认）、卡维度 cardDimension（自由字符串或 All，默认 All）
  *   - 统计：执行巡检后自动统计该组合在本次巡检中的命中条数，记录 latestHitCount（不手动维护）
  *   - 录入：手动新增/编辑 + 从聚类摘要维度 Top 分组一键导入 + CSV 文件导出/导入（按 场景+内码+外码 覆盖更新）
  *   - 供 AI 日报生成：aiReferenceText() 仅引用「已分析/已闭环」且有分析文本的案例，喂给汇总调用
@@ -18,17 +18,17 @@ const sceneStore = require('./scene-store');
 const FILE = path.join(__dirname, '..', 'data', 'failure-library.json');
 
 /* ---------- 字段枚举与归一化（新增维护字段） ---------- */
-const CATEGORY_ENUM = ['端侧问题', 'SP问题', '云侧问题', '默认待确认'];
+const CATEGORY_ENUM = ['端侧问题', 'SP问题', '云侧问题', '非问题', '待确认'];
 const STATUS_ENUM = ['待确认', '已分析', '已闭环'];
-const DEFAULT_CATEGORY = '默认待确认';
+const DEFAULT_CATEGORY = '待确认';
 const DEFAULT_STATUS = '待确认';
-const DEFAULT_CARD = 'NA';
+const DEFAULT_CARD = 'All';
 
 const normalizeCategory = (v) => (CATEGORY_ENUM.includes(String(v || '').trim()) ? String(v).trim() : DEFAULT_CATEGORY);
 const normalizeStatus = (v) => (STATUS_ENUM.includes(String(v || '').trim()) ? String(v).trim() : DEFAULT_STATUS);
 const normalizeCard = (v) => {
   const s = String(v || '').trim();
-  return s === '' ? DEFAULT_CARD : s;
+  return s === '' || s === 'NA' ? DEFAULT_CARD : s;
 };
 
 /** CSV 表头（导出/导入共用，列顺序固定） */
@@ -38,7 +38,17 @@ function load() {
   try {
     if (!fs.existsSync(FILE)) return [];
     const arr = JSON.parse(fs.readFileSync(FILE, 'utf-8'));
-    return Array.isArray(arr) ? arr : [];
+    const result = Array.isArray(arr) ? arr : [];
+    // 旧数据迁移：默认待确认 -> 待确认；卡维度 NA -> All；缺失字段补默认值
+    let changed = false;
+    for (const it of result) {
+      if (!it.category || it.category === '默认待确认') { it.category = DEFAULT_CATEGORY; changed = true; }
+      else if (!CATEGORY_ENUM.includes(it.category)) { it.category = DEFAULT_CATEGORY; changed = true; }
+      if (!it.status) { it.status = DEFAULT_STATUS; changed = true; }
+      if (!it.cardDimension || it.cardDimension === 'NA') { it.cardDimension = DEFAULT_CARD; changed = true; }
+    }
+    if (changed) save(result);
+    return result;
   } catch (e) {
     logger.warn(`[failure-library] load failed: ${e.message}`);
     return [];

@@ -3,13 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 const routes = [
   {
     path: '/',
-    redirect: '/tasks'
-  },
-  {
-    path: '/tasks',
-    name: 'TaskList',
-    component: () => import('../views/TaskList.vue'),
-    meta: { title: '巡检任务管理' }
+    redirect: '/health-check-export'
   },
   {
     path: '/health-check-export',
