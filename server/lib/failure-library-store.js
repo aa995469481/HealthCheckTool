@@ -32,7 +32,7 @@ const normalizeCard = (v) => {
 };
 
 /** CSV 表头（导出/导入共用，列顺序固定） */
-const CSV_HEADERS = ['场景', '内码', '外码', '卡维度', '问题类别', '问题状态', '案例分析', '最近用户数', '最近检查', '更新时间'];
+const CSV_HEADERS = ['场景', '内码', '外码', '卡维度', '问题类别', '问题状态', '案例分析', '最近用户数', '上一次用户数', '最近检查', '更新时间'];
 
 function load() {
   try {
@@ -191,7 +191,7 @@ function buildNonProblemFilter(scene) {
 
 /**
  * 执行巡检后自动更新用户数量：统计该场景本次巡检记录中 (内码, 外码) 组合命中的去重用户数（按 uid 去重，无 uid 的记录不计入），
- * 更新库中同一场景条目的 latestUserCount / lastCheckedAt（组合缺失一端时按单字段统计）
+ * 更新库中同一场景条目的 latestUserCount / prevUserCount（上一次巡检数量=本次更新前旧值）/ lastCheckedAt（组合缺失一端时按单字段统计）
  * 已确认「非问题」的记录（buildNonProblemFilter 命中）不参与统计
  * @returns {number} 更新条数
  */
@@ -230,6 +230,8 @@ function updateUserCounts(scene, records) {
     } else if (c.extCode) {
       count = (extUsers.get(c.extCode) || emptySet).size;
     }
+    // 上一次巡检的用户数量 = 本次更新前的旧值（仅当此前已被巡检过；新条目首次巡检不产生「上一次」数据）
+    if (c.lastCheckedAt) c.prevUserCount = c.latestUserCount;
     if (c.latestUserCount !== count) c.latestUserCount = count;
     c.lastCheckedAt = new Date().toISOString();
     updated++;
@@ -385,7 +387,12 @@ function aiReferenceText() {
   const lines = list.slice(0, 20).map((c, i) => {
     const scene = c.sceneTitle || '未命名场景';
     const code = `${c.inCode || '-'}${c.extCode ? ' / ' + c.extCode : ''}`;
-    const hit = c.latestUserCount > 0 ? `（最近巡检 ${c.latestUserCount} 个用户）` : '';
+    const latest = c.latestUserCount || 0;
+    // 对比上一次巡检（无上一次数据或持平则不附加）
+    const compare = (c.prevUserCount !== undefined && c.prevUserCount !== null && c.prevUserCount !== latest)
+      ? `，较上次${latest > c.prevUserCount ? '+' : '-'}${Math.abs(latest - c.prevUserCount)}`
+      : '';
+    const hit = latest > 0 ? `（最近巡检 ${latest} 个用户${compare}）` : '';
     return `${i + 1}. [${scene}] 内码+外码=${code}${hit}：${String(c.analysis).slice(0, 500)}`;
   });
   return lines.join('\n');
@@ -409,6 +416,7 @@ function exportCsv() {
     c.status || DEFAULT_STATUS,
     c.analysis || '',
     c.latestUserCount || 0,
+    c.prevUserCount === undefined || c.prevUserCount === null ? '' : c.prevUserCount,
     c.lastCheckedAt || '',
     c.updatedAt || ''
   ]);
@@ -475,6 +483,7 @@ function importCsv(text) {
   // 兼容旧版导出的 CSV（列名「最近命中」）
   let iHit = col('最近用户数');
   if (iHit < 0) iHit = col('最近命中');
+  const iPrev = col('上一次用户数');
   if (iScene < 0) throw new Error('CSV 缺少「场景」列，请使用导出的 CSV 模板格式');
   if (iIn < 0 && iExt < 0) throw new Error('CSV 至少需要「内码」或「外码」列');
 
@@ -510,9 +519,17 @@ function importCsv(text) {
       if (!exist.sceneId && scene) exist.sceneId = scene.id;
       const hit = Number(get(iHit));
       if (!isNaN(hit) && hit > 0) exist.latestUserCount = hit;
+      if (iPrev >= 0) {
+        const prevRaw = get(iPrev);
+        const prevNum = Number(prevRaw);
+        exist.prevUserCount = prevRaw !== '' && !isNaN(prevNum) ? prevNum : undefined;
+      }
       exist.updatedAt = now;
       updated++;
     } else {
+      const hit = Number(get(iHit));
+      const prevNum = Number(get(iPrev));
+      const prevUserCount = iPrev >= 0 && get(iPrev) !== '' && !isNaN(prevNum) ? prevNum : undefined;
       list.push({
         id: crypto.randomBytes(8).toString('hex'),
         sceneId: scene ? scene.id : '',
@@ -523,7 +540,8 @@ function importCsv(text) {
         category: patch.category,
         status: patch.status,
         cardDimension: patch.cardDimension,
-        latestUserCount: 0,
+        latestUserCount: !isNaN(hit) && hit > 0 ? hit : 0,
+        ...(prevUserCount !== undefined ? { prevUserCount } : {}),
         lastCheckedAt: '',
         createdAt: now,
         updatedAt: now

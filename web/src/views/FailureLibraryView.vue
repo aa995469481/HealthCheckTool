@@ -87,11 +87,14 @@
             <el-tag v-else size="small" type="info" effect="plain">待补充</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="用户数量(uid)" width="110">
+        <el-table-column label="用户数量(uid)" width="200">
           <template #default="{ row }">
-            <el-tag :type="row.latestUserCount > 0 ? 'danger' : 'info'" size="small" effect="plain">
-              {{ row.latestUserCount || 0 }}
-            </el-tag>
+            <div class="user-count-cell">
+              <el-tag :type="row.latestUserCount > 0 ? 'danger' : 'info'" size="small" effect="plain">
+                {{ row.latestUserCount || 0 }}
+              </el-tag>
+              <span v-if="userCountCompare(row)" class="user-count-compare">{{ userCountCompare(row) }}</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="最近检查" width="165">
@@ -203,6 +206,14 @@ function categoryTagType(cat) {
 }
 function statusTagType(st) {
   return { '待确认': 'info', '已分析': 'warning', '已闭环': 'success' }[st || '待确认'] || 'info';
+}
+/** 用户数量对比文案：无上一次数据或持平返回 null，否则返回如（100+900）/（1000-900） */
+function userCountCompare(row) {
+  const cur = row.latestUserCount || 0;
+  const prev = row.prevUserCount;
+  if (prev === undefined || prev === null || prev === cur) return null;
+  const diff = Math.abs(cur - prev);
+  return cur > prev ? `（${prev}+${diff}）` : `（${prev}-${diff}）`;
 }
 
 function resetFilters() {
@@ -472,6 +483,15 @@ onMounted(() => {
   font-size: 13px;
   color: #303133;
   line-height: 1.6;
+}
+.user-count-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.user-count-compare {
+  font-size: 12px;
+  color: #909399;
 }
 .text-muted {
   color: #909399;
