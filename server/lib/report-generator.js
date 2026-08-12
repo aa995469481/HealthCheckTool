@@ -423,9 +423,15 @@ async function generateDailyReport({ mock = false } = {}) {
   const concurrency = Math.max(1, Math.min(3, Number(cfg.maxConcurrentScenes) || 2));
   logger.info(`[ai-report] scene calls concurrency=${concurrency}`);
   const sceneResults = await runPool(sceneTasks, concurrency, async (task) => {
-    const sr = await analyzeScene({ summary: task.s, problems: task.problems }, task.title, maxChars, mock);
-    logger.info(`[ai-report] scene ${task.i + 1}/${summaries.length} title=${task.title} problems=${task.problems.length} batches=${sr.batches} inputChars=${sr.inputChars} outputChars=${sr.content.length}`);
-    return { title: task.title, content: sr.content, batches: sr.batches, inputChars: sr.inputChars, problems: task.problems.slice(0, maxProblems) };
+    // 场景级容错：单个场景分析失败不拖垮整个日报，汇总时标注失败原因
+    try {
+      const sr = await analyzeScene({ summary: task.s, problems: task.problems }, task.title, maxChars, mock);
+      logger.info(`[ai-report] scene ${task.i + 1}/${summaries.length} title=${task.title} problems=${task.problems.length} batches=${sr.batches} inputChars=${sr.inputChars} outputChars=${sr.content.length}`);
+      return { title: task.title, content: sr.content, batches: sr.batches, inputChars: sr.inputChars, problems: task.problems.slice(0, maxProblems) };
+    } catch (e) {
+      logger.error(`[ai-report] scene ${task.i + 1}/${summaries.length} title=${task.title} FAILED: ${e.message}`);
+      return { title: task.title, error: e.message, content: '', batches: 0, inputChars: 0, problems: task.problems.slice(0, maxProblems) };
+    }
   });
   // runPool 按下标写回，sceneResults 天然保持原始场景顺序
   const sceneReports = sceneResults;
@@ -475,6 +481,9 @@ async function generateDailyReport({ mock = false } = {}) {
   // 汇总输入控制：每场景分析限长，保证总输入不超过 maxChars（避免汇总调用超时）
   const perSceneBudget = Math.max(800, Math.floor((maxChars * 0.8) / sceneReports.length));
   const sceneSections = sceneReports.map((sr, i) => {
+    if (sr.error) {
+      return `### 场景 ${i + 1}：${sr.title}\n>（该场景 AI 分析失败：${sr.error}。日报其余部分不受影响，可稍后重新生成日报补齐该场景）`;
+    }
     const clipped = clipText(sr.content, perSceneBudget);
     return `### 场景 ${i + 1}：${sr.title}\n${clipped}`;
   }).join('\n\n');

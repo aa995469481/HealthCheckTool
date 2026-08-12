@@ -100,6 +100,16 @@ async function callChat({ system, user } = {}) {
         throw new Error('大模型返回内容解析失败：' + e.message);
       }
 
+      // 网关自定义封装：HTTP 200 但 result.code != 0 表示服务端业务错误（如 Full to incr pod load balance timeout），属偶发负载类错误，标记可重试
+      const bizCode = json && json.result && json.result.code !== undefined ? json.result.code : null;
+      if (bizCode !== null && Number(bizCode) !== 0) {
+        const bizDes = json.result.des ? String(json.result.des) : '';
+        const svc = json.result.serviceName ? String(json.result.serviceName) : '';
+        const err = new Error(`大模型服务端错误（code=${bizCode}）${bizDes ? '：' + bizDes : ''}${svc ? '（服务：' + svc + '）' : ''}`);
+        err.retryable = true;
+        throw err;
+      }
+
       const choice = json.choices && json.choices[0];
       const content = choice && choice.message ? String(choice.message.content || '') : '';
       const finishReason = choice ? String(choice.finish_reason || '') : '';
@@ -120,7 +130,7 @@ async function callChat({ system, user } = {}) {
       return { content, finishReason };
     } catch (e) {
       lastErr = e;
-      const retryable = /timeout/i.test(e.message);
+      const retryable = /timeout/i.test(e.message) || e.retryable === true;
       if (!retryable || attempt === MAX_ATTEMPTS) throw e;
       const usedMs = Date.now() - startedAt;
       logger.warn(`[llm] attempt ${attempt}/${MAX_ATTEMPTS} failed ms=${usedMs}: ${e.message}，3s 后重试`);
@@ -182,6 +192,11 @@ async function testConnection({ endpoint, model, token, temperature, timeoutMs }
       json = JSON.parse(res.body);
     } catch (e) {
       return { ok: false, error: '响应解析失败（返回内容不是 JSON）：' + String(res.body).slice(0, 200) };
+    }
+    // 网关自定义封装：HTTP 200 但 result.code != 0 表示服务端业务错误（负载均衡超时等）
+    const bizCode = json && json.result && json.result.code !== undefined ? json.result.code : null;
+    if (bizCode !== null && Number(bizCode) !== 0) {
+      return { ok: false, error: `服务端业务错误（code=${bizCode}）：${(json.result.des || '未知')}（网关负载/超时类错误，可稍后重试）` };
     }
     const choice = json.choices && json.choices[0];
     const content = choice && choice.message ? String(choice.message.content || '') : '';
