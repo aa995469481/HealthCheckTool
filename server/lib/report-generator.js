@@ -24,6 +24,7 @@ const llm = require('./llm-service');
 const aiConfig = require('./ai-config-store');
 const correctionStore = require('./correction-store');
 const failureLibrary = require('./failure-library-store');
+const inspectionHistory = require('./inspection-history');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
 
@@ -57,14 +58,6 @@ function trimSample(sample) {
 
 const SCENE_SYSTEM = `你是资深业务巡检专家，擅长从日志聚类摘要中定位系统问题并给出专业分析。你的输出将被汇总进一份正式巡检日报。要求：语言精炼专业、结构清晰、重点突出，只输出你负责的该场景分析内容（Markdown 格式），不要输出日报其他章节，不要输出多余说明。`;
 
-const REPORT_SYSTEM = `你是资深业务巡检专家，负责汇总多个场景的巡检分析，输出一份正式的「业务巡检日报」。日报必须严格按以下三段式结构组织（Markdown 格式）：
-
-一、巡检概览
-二、各场景问题分析
-三、整体结论与处置建议
-
-要求：语言专业、简洁；第三部分需给出总体健康度评价、优先处置事项与后续跟进建议；直接输出日报正文，不要输出任何解释性文字。`;
-
 /* ---------- 文本裁剪 ---------- */
 
 function clipText(text, maxChars) {
@@ -81,6 +74,149 @@ function formatTimeRange(begin, end) {
   return `${b} ~ ${e}`;
 }
 
+/* ---------- 关键问题判定规则（与用户确认，2026-08-10，AI 设置可配置） ---------- */
+
+const DEFAULT_RULES = {
+  trendDays: 7,
+  userCountThreshold: 50,
+  increasePercent: 50,
+  highRiskNew: true,
+  pendingFirst: true,
+  maxProblems: 15
+};
+
+/** 失败场景库索引：key = `${sceneTitle}|${inCode}|${extCode}` -> entry */
+function buildLibMap() {
+  const map = new Map();
+  for (const c of failureLibrary.list()) {
+    if (c && c.sceneTitle && (c.inCode || c.extCode)) {
+      map.set(`${c.sceneTitle}|${c.inCode || ''}|${c.extCode || ''}`, c);
+    }
+  }
+  return map;
+}
+
+/**
+ * 问题级数据（内码+外码组合）构建 + 关键问题判定与排序
+ * 规则：新出现(prev=0)/激增(增幅>=increasePercent) 标高危 > 待确认且达阈值 > 用户数降序
+ */
+function buildProblems(sceneTitle, combos, rules, libMap) {
+  if (!Array.isArray(combos)) return [];
+  const threshold = rules.userCountThreshold || DEFAULT_RULES.userCountThreshold;
+  const pct = (rules.increasePercent || DEFAULT_RULES.increasePercent) / 100;
+  const out = [];
+  for (const c of combos) {
+    if (!(c.count > 0)) continue;
+    const lib = libMap.get(`${sceneTitle}|${c.inCode || ''}|${c.extCode || ''}`);
+    const prev = lib && lib.prevUserCount !== undefined && lib.prevUserCount !== null ? lib.prevUserCount : undefined;
+    const isNew = prev !== undefined && prev === 0;
+    const isSpike = prev !== undefined && prev > 0 && c.count >= prev && (c.count - prev) / prev >= pct;
+    const highRisk = (rules.highRiskNew !== false) && (isNew || isSpike);
+    const pending = !!(lib && lib.status === '待确认');
+    out.push({
+      sceneTitle,
+      inCode: c.inCode || '',
+      extCode: c.extCode || '',
+      count: c.count,
+      prev,
+      status: lib ? lib.status : '待确认',
+      category: lib ? lib.category : '',
+      analysis: lib ? String(lib.analysis || '').slice(0, 200) : '',
+      highRisk,
+      isNew,
+      isSpike,
+      pending,
+      aboveThreshold: c.count >= threshold
+    });
+  }
+  out.sort((a, b) => {
+    if (a.highRisk !== b.highRisk) return b.highRisk ? 1 : -1;
+    if (rules.pendingFirst !== false) {
+      const pa = a.pending && a.aboveThreshold ? 1 : 0;
+      const pb = b.pending && b.aboveThreshold ? 1 : 0;
+      if (pa !== pb) return pb - pa;
+    }
+    return (b.count || 0) - (a.count || 0);
+  });
+  return out;
+}
+
+/** 单条问题总览行文本 */
+function problemLine(p, idx) {
+  const trend = p.prev === undefined
+    ? '无上次'
+    : (p.count > p.prev ? `+${p.count - p.prev}` : `-${p.prev - p.count}`);
+  const flags = [];
+  if (p.highRisk) flags.push('高危');
+  if (p.pending) flags.push('待确认');
+  const code = `${p.inCode}${p.extCode ? '/' + p.extCode : ''}`;
+  const flagText = flags.length ? `｜标记：${flags.join('、')}` : '';
+  return `${idx}. [${p.sceneTitle}] ${code}：${p.count} 用户（较上次${trend}）｜类别：${p.category || '未归类'}｜状态：${p.status}${flagText}${p.analysis ? '｜人工结论：' + p.analysis : ''}`;
+}
+
+/** 人工分析情况统计 + 待确认清单（仅统计本次巡检涉及的场景） */
+function buildManualStats(sceneTitles, libMap) {
+  const entries = [...libMap.values()].filter((c) => sceneTitles.has(c.sceneTitle));
+  const stats = { total: entries.length, 已分析: 0, 待确认: 0, 已闭环: 0, category: { 端侧问题: 0, SP问题: 0, 云侧问题: 0, 非问题: 0 } };
+  const pending = [];
+  for (const c of entries) {
+    if (c.status && stats[c.status] !== undefined) stats[c.status]++;
+    if (c.category && stats.category[c.category] !== undefined) stats.category[c.category]++;
+    if (c.status === '待确认') {
+      pending.push({ sceneTitle: c.sceneTitle, inCode: c.inCode || '', extCode: c.extCode || '', count: c.latestUserCount || 0 });
+    }
+  }
+  pending.sort((a, b) => b.count - a.count);
+  return { stats, pending: pending.slice(0, 10) };
+}
+
+/** 人工分析情况文本（统计 + 待确认清单） */
+function buildManualText(manual) {
+  const s = manual.stats;
+  if (!s.total) return '- 失败场景库暂无人工分析记录';
+  const cat = s.category;
+  const catParts = ['端侧问题', 'SP问题', '云侧问题', '非问题']
+    .filter((k) => cat[k] > 0)
+    .map((k) => `${k} ${cat[k]}条`);
+  const lines = [
+    `- 失败场景库共 ${s.total} 条：已分析 ${s.已分析}、待确认 ${s.待确认}、已闭环 ${s.已闭环}${catParts.length ? '；类别分布：' + catParts.join('、') : ''}`
+  ];
+  if (manual.pending.length) {
+    lines.push('- 待确认问题清单（人工尚未分析，Top 10）：');
+    manual.pending.forEach((p, i) => lines.push(`  - ${i + 1}. [${p.sceneTitle}] ${p.inCode}${p.extCode ? '/' + p.extCode : ''}（${p.count} 用户）`));
+  }
+  return lines.join('\n');
+}
+
+/** 单场景近 N 天命中趋势行（缺某天显示 -） */
+function sceneTrendLine(sceneTitle, trend) {
+  const parts = trend.map((d) => {
+    const sc = (d.scenes || []).find((s) => s.sceneTitle === sceneTitle);
+    return `${d.date.slice(5)}:${sc ? sc.total : '-'}`;
+  });
+  return `- 「${sceneTitle}」：${parts.join('，')}`;
+}
+
+/** 五段式系统提示词（含用户结构化模板要求） */
+function buildReportSystem(tpl = {}) {
+  let s = `你是资深业务巡检专家，负责汇总多个场景的巡检分析，输出一份正式的「业务巡检日报」。日报必须严格按以下五段式结构组织（Markdown 格式）：
+
+一、巡检概览（计划/版本/时间/各场景命中数，以及近 N 天命中趋势）
+二、问题总览表（用 Markdown 表格列出关键问题：场景｜问题(内码/外码)｜用户数｜较上次变化｜问题类别｜人工状态｜处置建议）
+三、关键问题分析（对标记为高危、待确认或用户数较高的问题逐个深入分析：现象、可能原因、影响面）
+四、人工分析情况（统计已分析/待确认/已闭环数量与类别分布，引用关键问题对应的人工分析结论，列出待确认问题清单）
+五、整体结论与处置建议（总体健康度、优先处置事项、后续跟进建议）
+
+要求：语言专业、简洁；关键问题必须依据「问题总览」的优先级展开，结合人工分析结论，避免泛泛而谈；直接输出日报正文，不要输出任何解释性文字。`;
+  const extras = [tpl.focus, tpl.format, tpl.extra]
+    .map((x) => String(x || '').trim())
+    .filter(Boolean);
+  if (extras.length) {
+    s += `\n\n以下为用户对日报的特殊要求，必须严格执行：\n${extras.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
+  }
+  return s;
+}
+
 /* ---------- 分批：基于结构化摘要构建精简输入 + 打包批次 ---------- */
 
 /**
@@ -90,7 +226,7 @@ function formatTimeRange(begin, end) {
  *   - 样本字段裁剪：trimSample
  *   - 版本分布只取前 3、二级细分只列统计不列样本
  */
-function buildSceneBlocks(summary) {
+function buildSceneBlocks(summary, problems) {
   const dims = summary.dimensions || [];
   // 第一步：按配额分配样本（跨维度轮询，保证每个维度都有代表样本）
   //   轮次 0：每个维度的 Top 分组先各取 1 条；轮次 1：再各取第 2 条，直到场景配额用尽
@@ -147,6 +283,23 @@ function buildSceneBlocks(summary) {
     if (dim.others) lines.push(`- 其他：${dim.others.groups} 个分组共 ${dim.others.count} 条（占比小/超 Top7 未细分）`);
     blocks.push({ title: `维度 ${di + 1}：${dim.field}`, text: lines.join('\n') });
   }
+  // 问题级组合（内码+外码，来自 countCombos 精确统计 + 失败场景库人工信息）
+  if (problems && problems.length) {
+    const plines = ['- 问题级组合（内码+外码，按用户数/风险排序，含人工分析）：'];
+    for (const p of problems.slice(0, 10)) {
+      const trend = p.prev === undefined
+        ? '无上次'
+        : (p.count > p.prev ? `+${p.count - p.prev}` : `-${p.prev - p.count}`);
+      const flags = [];
+      if (p.highRisk) flags.push('高危');
+      if (p.pending) flags.push('待确认');
+      const code = `${p.inCode}${p.extCode ? '/' + p.extCode : ''}`;
+      plines.push(
+        `  - ${code}：${p.count} 用户（较上次${trend}）｜类别：${p.category || '未归类'}｜状态：${p.status}${flags.length ? '｜标记：' + flags.join('、') : ''}${p.analysis ? '｜人工结论：' + p.analysis : ''}`
+      );
+    }
+    blocks.push({ title: '问题级组合', text: plines.join('\n') });
+  }
   return blocks;
 }
 
@@ -174,10 +327,11 @@ function packBlocks(blocks, maxChars) {
 
 /**
  * 生成单个场景的问题分析（输入超长时按批次多次调用，逐批分析后拼接）
+ * @param {object} ctx { summary, problems } 场景摘要 + 问题级组合数据
  * @returns {Promise<{ content, batches, inputChars }>}
  */
-async function analyzeScene(summary, title, maxChars, mock) {
-  const blocks = buildSceneBlocks(summary);
+async function analyzeScene(ctx, title, maxChars, mock) {
+  const blocks = buildSceneBlocks(ctx.summary, ctx.problems);
   const batches = packBlocks(blocks, maxChars);
   const parts = [];
   let totalInputChars = 0;
@@ -216,7 +370,7 @@ function mockSceneReport(title, markdown) {
 /* ---------- 主入口 ---------- */
 
 /**
- * 生成巡检日报
+ * 生成巡检日报（五段式，含问题总览/关键问题/人工分析情况/近 N 天趋势）
  * @param {object} opts { mock?: boolean }
  * @returns {Promise<{ markdown, html, sceneReports, meta }>}
  */
@@ -233,19 +387,27 @@ async function generateDailyReport({ mock = false } = {}) {
   const maxChars = cfg.maxCharsPerPrompt && cfg.maxCharsPerPrompt > 0 ? cfg.maxCharsPerPrompt : 12000;
   // 计划名清洗：空或历史遗留的 'unnamed' 一律视为未命名，避免出现在日报标题/主题中
   const planName = analysis.plan && String(analysis.plan) !== 'unnamed' ? String(analysis.plan) : '';
+  const rules = { ...DEFAULT_RULES, ...(cfg.reportRules || {}) };
+  const template = { ...(cfg.reportTemplate || {}) };
+  const trendDays = Math.max(1, Number(rules.trendDays) || DEFAULT_RULES.trendDays);
+  const maxProblems = Math.max(1, Number(rules.maxProblems) || DEFAULT_RULES.maxProblems);
+  const trend = inspectionHistory.loadTrend(trendDays);
+  const libMap = buildLibMap();
 
-  logger.info(`[ai-report] start scenes=${summaries.length} mock=${mock} maxChars=${maxChars} plan=${planName || '(未命名)'}`);
+  logger.info(`[ai-report] start scenes=${summaries.length} mock=${mock} maxChars=${maxChars} plan=${planName || '(未命名)'} trendDays=${trendDays} trendFiles=${trend.length}`);
 
-  // 第一步：每个场景分批调用，生成该场景的问题分析
+  // 第一步：每个场景分批调用，生成该场景的问题分析（含问题级组合数据）
   const sceneReports = [];
   for (let i = 0; i < summaries.length; i++) {
     const title = summaries[i].scenarioTitle || `场景${i + 1}`;
-    const sr = await analyzeScene(summaries[i], title, maxChars, mock);
-    sceneReports.push({ title, content: sr.content, batches: sr.batches, inputChars: sr.inputChars });
-    logger.info(`[ai-report] scene ${i + 1}/${summaries.length} title=${title} batches=${sr.batches} inputChars=${sr.inputChars} outputChars=${sr.content.length}`);
+    const combos = (analysis.combosByScene && analysis.combosByScene[title]) || [];
+    const problems = buildProblems(title, combos, rules, libMap);
+    const sr = await analyzeScene({ summary: summaries[i], problems }, title, maxChars, mock);
+    sceneReports.push({ title, content: sr.content, batches: sr.batches, inputChars: sr.inputChars, problems: problems.slice(0, maxProblems) });
+    logger.info(`[ai-report] scene ${i + 1}/${summaries.length} title=${title} problems=${problems.length} batches=${sr.batches} inputChars=${sr.inputChars} outputChars=${sr.content.length}`);
   }
 
-  // 第二步：汇总调用，生成三段式完整日报
+  // 第二步：汇总调用，生成五段式完整日报
   const overviewLines = [
     `- 巡检计划：${planName || '未命名计划'}`,
     `- 目标版本：${analysis.appVer || '未指定'}`,
@@ -253,6 +415,21 @@ async function generateDailyReport({ mock = false } = {}) {
     `- 巡检场景数：${summaries.length}`,
     `- 各场景命中条数：${summaries.map((s, i) => `「${s.scenarioTitle || `场景${i + 1}`}」${s.total}条`).join('；')}`
   ].join('\n');
+
+  // 近 N 天各场景命中趋势（来自历史快照）
+  const trendLines = summaries.length && trend.length
+    ? `近${trendDays}天各场景命中趋势：\n${summaries.map((s, i) => sceneTrendLine(s.scenarioTitle || `场景${i + 1}`, trend)).join('\n')}`
+    : '';
+
+  // 人工分析情况（统计 + 待确认清单，仅统计本次巡检涉及的场景）
+  const sceneTitles = new Set(summaries.map((s) => s.scenarioTitle || '').filter(Boolean));
+  const manualText = buildManualText(buildManualStats(sceneTitles, libMap));
+
+  // 问题总览（跨场景 Top，供大模型重点分析）
+  const allProblems = sceneReports.flatMap((sr) => sr.problems).slice(0, maxProblems);
+  const problemText = allProblems.length
+    ? `\n\n问题总览（关键问题，按优先级排序：高危/待确认优先，供你重点分析与排序）：\n${allProblems.map((p, i) => problemLine(p, i + 1)).join('\n')}\n`
+    : '';
 
   // 人工矫正意见（全局生效，喂给汇总调用，不重复出现在各场景分析 prompt）
   const correctionsText = correctionStore.correctionsText();
@@ -279,9 +456,18 @@ async function generateDailyReport({ mock = false } = {}) {
     return `### 场景 ${i + 1}：${sr.title}\n${clipped}`;
   }).join('\n\n');
 
-  const reportUser = `本次巡检概况：\n${overviewLines}${correctionBlock}${failureBlock}\n\n以下是各场景的问题分析结果：\n\n${sceneSections}\n\n请据此生成完整的三段式巡检日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。${correctionHint}${failureHint}`;
+  const reportUser = [
+    `本次巡检概况：\n${overviewLines}`,
+    trendLines ? `\n${trendLines}\n` : '',
+    `\n人工分析情况：\n${manualText}`,
+    problemText,
+    correctionBlock,
+    failureBlock,
+    `\n以下是各场景的问题分析结果：\n\n${sceneSections}`,
+    `\n请据此生成完整的五段式巡检日报（一、巡检概览；二、问题总览表；三、关键问题分析；四、人工分析情况；五、整体结论与处置建议）。${correctionHint}${failureHint}`
+  ].join('');
 
-  logger.info(`[ai-report] final call inputChars=${reportUser.length} perSceneBudget=${perSceneBudget} corrections=${correctionsText ? correctionsText.split('\n').length : 0} failureCases=${failureText ? failureText.split('\n').length : 0}`);
+  logger.info(`[ai-report] final call inputChars=${reportUser.length} perSceneBudget=${perSceneBudget} problems=${allProblems.length} corrections=${correctionsText ? correctionsText.split('\n').length : 0} failureCases=${failureText ? failureText.split('\n').length : 0}`);
   let markdown;
   if (mock) {
     const mockSections = sceneReports.map((sr, i) => `### 场景 ${i + 1}：${sr.title}\n\n${sr.content}`).join('\n\n');
@@ -292,12 +478,19 @@ async function generateDailyReport({ mock = false } = {}) {
       '',
       '## 一、巡检概览',
       overviewLines.replace(/- /g, '- '),
+      trendLines ? trendLines.replace(/- /g, '- ') : '',
       '',
-      '## 二、各场景问题分析',
+      '## 二、问题总览表',
+      problemText.trim() || '（暂无问题级数据）',
+      '',
+      '## 三、关键问题分析',
       mockSections,
       '',
-      '## 三、整体结论与处置建议',
-      '本次巡检各场景整体健康度中等，主要问题集中在主错误码相关路径，建议：1) 优先核查主错误码对应链路；2) 按版本分布定位引入版本；3) 次日巡检验证处置效果。',
+      '## 四、人工分析情况',
+      manualText,
+      '',
+      '## 五、整体结论与处置建议',
+      '本次巡检各场景整体健康度中等，主要问题集中在高危/待确认组合，建议：1) 优先核查高危问题链路；2) 结合人工分析定位根因；3) 次日巡检验证处置效果。',
       ''
     ].join('\n');
     if (correctionsText) {
@@ -307,7 +500,7 @@ async function generateDailyReport({ mock = false } = {}) {
       markdown += `\n## 附：失败场景库参考\n${failureText}\n`;
     }
   } else {
-    const r = await llm.callChat({ system: REPORT_SYSTEM, user: reportUser });
+    const r = await llm.callChat({ system: buildReportSystem(template), user: reportUser });
     markdown = r.content;
   }
 
@@ -323,7 +516,14 @@ async function generateDailyReport({ mock = false } = {}) {
     appVer: analysis.appVer || '',
     beginTimestamp: analysis.beginTimestamp || '',
     endTimestamp: analysis.endTimestamp || '',
-    scenes: sceneReports.map((sr) => ({ title: sr.title, batches: sr.batches, inputChars: sr.inputChars, outputChars: sr.content.length })),
+    trendDays,
+    rules: {
+      userCountThreshold: rules.userCountThreshold,
+      increasePercent: rules.increasePercent,
+      highRiskNew: rules.highRiskNew,
+      pendingFirst: rules.pendingFirst
+    },
+    scenes: sceneReports.map((sr) => ({ title: sr.title, batches: sr.batches, inputChars: sr.inputChars, outputChars: sr.content.length, problems: sr.problems.length })),
     totalCalls: sceneReports.reduce((s, x) => s + x.batches, 0) + 1,
     mock
   };
@@ -477,4 +677,4 @@ ${body}
 </html>`;
 }
 
-module.exports = { generateDailyReport, markdownToHtml, clipText, buildSceneBlocks, packBlocks, trimSample };
+module.exports = { generateDailyReport, markdownToHtml, clipText, buildSceneBlocks, packBlocks, trimSample, buildProblems, buildManualStats, sceneTrendLine, buildReportSystem, DEFAULT_RULES };

@@ -228,7 +228,7 @@
         </div>
       </template>
       <div class="ai-report-hint">
-        日报基于最近一次执行巡检生成的聚类摘要，分场景多次调用大模型（每次输入控制在 {{ aiStatus.maxCharsPerPrompt || 12000 }} 字内）后汇总，输出三段式标准日报（一、巡检概览；二、各场景问题分析；三、整体结论与处置建议）。
+        日报基于最近一次执行巡检生成的聚类摘要，分场景多次调用大模型（每次输入控制在 {{ aiStatus.maxCharsPerPrompt || 12000 }} 字内）后汇总，输出五段式日报（一、巡检概览；二、问题总览表；三、关键问题分析；四、人工分析情况；五、整体结论与处置建议），并按 AI 设置中的「报告规则与模板」判定关键问题、展示近 {{ aiStatus.reportRules.trendDays || 7 }} 天命中趋势。
         「Mock 生成」不调用大模型，用于本地演示与测试。
       </div>
 
@@ -302,7 +302,7 @@
     </el-card>
 
     <!-- AI 设置对话框 -->
-    <el-dialog v-model="aiDialogVisible" title="AI 大模型设置" width="560px" @closed="resetAiForm">
+    <el-dialog v-model="aiDialogVisible" title="AI 大模型设置" width="640px" @closed="resetAiForm">
       <el-form label-width="110px">
         <el-form-item label="API 地址">
           <el-input v-model="aiForm.endpoint" placeholder="https://.../v1/chat/completions" />
@@ -327,6 +327,39 @@
         <el-form-item label="超时时间">
           <el-input-number v-model="aiForm.timeoutMs" :min="30000" :max="600000" :step="10000" />
           <span class="ai-form-tip">毫秒（默认 120000）</span>
+        </el-form-item>
+
+        <el-divider content-position="left">报告规则与模板</el-divider>
+        <el-form-item label="趋势天数">
+          <el-input-number v-model="aiForm.reportRules.trendDays" :min="1" :max="30" />
+          <span class="ai-form-tip">天（日报展示近 N 天各场景命中趋势）</span>
+        </el-form-item>
+        <el-form-item label="用户数阈值">
+          <el-input-number v-model="aiForm.reportRules.userCountThreshold" :min="0" :max="100000" :step="10" />
+          <span class="ai-form-tip">用户数 ≥ 阈值视为关键问题</span>
+        </el-form-item>
+        <el-form-item label="增幅阈值">
+          <el-input-number v-model="aiForm.reportRules.increasePercent" :min="0" :max="1000" />
+          <span class="ai-form-tip">%（较上次增幅 ≥ 阈值标为高危）</span>
+        </el-form-item>
+        <el-form-item label="关键问题上限">
+          <el-input-number v-model="aiForm.reportRules.maxProblems" :min="1" :max="50" />
+          <span class="ai-form-tip">条（问题总览最多列出）</span>
+        </el-form-item>
+        <el-form-item label="高危标记">
+          <el-switch v-model="aiForm.reportRules.highRiskNew" active-text="新出现/激增标为高危" />
+        </el-form-item>
+        <el-form-item label="待确认优先">
+          <el-switch v-model="aiForm.reportRules.pendingFirst" active-text="待确认且达阈值的问题排前" />
+        </el-form-item>
+        <el-form-item label="关注点">
+          <el-input v-model="aiForm.reportTemplate.focus" type="textarea" :rows="2" placeholder="如：重点核查充值链路、关注 XX 版本回归问题（可空）" />
+        </el-form-item>
+        <el-form-item label="格式要求">
+          <el-input v-model="aiForm.reportTemplate.format" type="textarea" :rows="2" placeholder="如：问题总览表需给出处置优先级、结论按影响面排序（可空）" />
+        </el-form-item>
+        <el-form-item label="附加指令">
+          <el-input v-model="aiForm.reportTemplate.extra" type="textarea" :rows="2" placeholder="其他要求（可空）" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -381,9 +414,11 @@ const debugRunning = ref(false);
 const debugResultText = ref('');
 
 /* AI 巡检日报 */
-const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPerPrompt: 12000, temperature: 0.2, timeoutMs: 120000 });
+const defaultReportRules = { trendDays: 7, userCountThreshold: 50, increasePercent: 50, highRiskNew: true, pendingFirst: true, maxProblems: 15 };
+const defaultReportTemplate = { focus: '', format: '', extra: '' };
+const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPerPrompt: 12000, temperature: 0.2, timeoutMs: 120000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
 const aiDialogVisible = ref(false);
-const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 120000 });
+const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 120000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
 const aiToken = ref('');
 const savingAi = ref(false);
 const aiReport = ref(null);
@@ -732,6 +767,8 @@ async function loadAiConfig() {
     aiStatus.maxCharsPerPrompt = data.maxCharsPerPrompt || 12000;
     aiStatus.temperature = data.temperature !== undefined ? data.temperature : 0.2;
     aiStatus.timeoutMs = data.timeoutMs || 120000;
+    aiStatus.reportRules = { ...defaultReportRules, ...(data.reportRules || {}) };
+    aiStatus.reportTemplate = { ...defaultReportTemplate, ...(data.reportTemplate || {}) };
   } catch (e) {
     ElMessage.error(e.message || '加载 AI 配置失败');
   }
@@ -743,6 +780,8 @@ function openAiConfig() {
   aiForm.temperature = aiStatus.temperature;
   aiForm.maxCharsPerPrompt = aiStatus.maxCharsPerPrompt;
   aiForm.timeoutMs = aiStatus.timeoutMs;
+  aiForm.reportRules = { ...aiStatus.reportRules };
+  aiForm.reportTemplate = { ...aiStatus.reportTemplate };
   aiToken.value = '';
   aiDialogVisible.value = true;
 }
@@ -762,6 +801,8 @@ async function saveAiConfig() {
         temperature: aiForm.temperature,
         maxCharsPerPrompt: aiForm.maxCharsPerPrompt,
         timeoutMs: aiForm.timeoutMs,
+        reportRules: aiForm.reportRules,
+        reportTemplate: aiForm.reportTemplate,
         // 自动去掉用户误填的 Bearer 前缀，避免 Authorization 双写
         token: aiToken.value.trim().replace(/^Bearer\s+/i, '') || undefined
       })
@@ -772,6 +813,8 @@ async function saveAiConfig() {
     aiStatus.maxCharsPerPrompt = data.maxCharsPerPrompt || 12000;
     aiStatus.temperature = data.temperature !== undefined ? data.temperature : 0.2;
     aiStatus.timeoutMs = data.timeoutMs || 120000;
+    aiStatus.reportRules = { ...defaultReportRules, ...(data.reportRules || {}) };
+    aiStatus.reportTemplate = { ...defaultReportTemplate, ...(data.reportTemplate || {}) };
     aiDialogVisible.value = false;
     ElMessage.success(aiToken.value.trim() ? 'AI 配置已保存（Token 已更新）' : 'AI 配置已保存');
   } catch (e) {

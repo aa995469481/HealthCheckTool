@@ -7,6 +7,8 @@
  *   model         模型名称
  *   temperature   采样温度（默认 0.2）
  *   maxCharsPerPrompt 每次调用输入最大字符数（默认 12000，超出裁剪）
+ *   reportRules    关键问题判定规则（趋势天数/用户数阈值/增幅阈值/待确认优先/高危标记）
+ *   reportTemplate 结构化提示词模板（关注点/格式要求/附加指令）
  */
 const fs = require('fs');
 const path = require('path');
@@ -20,7 +22,20 @@ const DEFAULT_CONFIG = {
   model: 'DeepSeek_V4_Flash_Client',
   temperature: 0.2,
   maxCharsPerPrompt: 12000,
-  timeoutMs: 120000
+  timeoutMs: 120000,
+  reportRules: {
+    trendDays: 7,
+    userCountThreshold: 50,
+    increasePercent: 50,
+    highRiskNew: true,
+    pendingFirst: true,
+    maxProblems: 15
+  },
+  reportTemplate: {
+    focus: '',
+    format: '',
+    extra: ''
+  }
 };
 
 function ensureFile() {
@@ -51,14 +66,22 @@ function getSafeStatus() {
     temperature: cfg.temperature,
     maxCharsPerPrompt: cfg.maxCharsPerPrompt,
     timeoutMs: cfg.timeoutMs,
+    reportRules: { ...DEFAULT_CONFIG.reportRules, ...(cfg.reportRules || {}) },
+    reportTemplate: { ...DEFAULT_CONFIG.reportTemplate, ...(cfg.reportTemplate || {}) },
     hasToken: Boolean(cfg.token && cfg.token.trim())
   };
 }
 
-/** 保存配置（token 为空时保留原值） */
+/** 保存配置（token 为空时保留原值；reportRules / reportTemplate 深层合并） */
 function saveConfig(partial) {
   const cfg = getConfig();
   const next = { ...cfg, ...partial };
+  if (partial && partial.reportRules && typeof partial.reportRules === 'object') {
+    next.reportRules = { ...DEFAULT_CONFIG.reportRules, ...(cfg.reportRules || {}), ...partial.reportRules };
+  }
+  if (partial && partial.reportTemplate && typeof partial.reportTemplate === 'object') {
+    next.reportTemplate = { ...DEFAULT_CONFIG.reportTemplate, ...(cfg.reportTemplate || {}), ...partial.reportTemplate };
+  }
   // token 留空不清空（页面编辑场景）；显式传 __clearToken 才清空
   if (partial && partial.__clearToken) {
     next.token = '';

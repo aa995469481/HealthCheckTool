@@ -29,6 +29,7 @@ const correctionStore = require('../lib/correction-store');
 const emlExport = require('../lib/eml-export');
 const emailConfigStore = require('../lib/email-config-store');
 const failureLibrary = require('../lib/failure-library-store');
+const inspectionHistory = require('../lib/inspection-history');
 
 const router = express.Router();
 
@@ -292,6 +293,18 @@ router.post('/export-json', async (req, res) => {
     // 固定名 latest.json，供页面展示读取
     fs.writeFileSync(path.join(analysisDir, 'latest.json'), JSON.stringify(analysisData, null, 2), 'utf-8');
     logger.info(`[export] cluster summary saved -> ${analysisFile} scenes=${summaries.length}`);
+
+    // 写入历史快照（按天聚合，供日报近 N 天趋势）
+    const snapshots = excelScenarios.map(({ scene, records }) => {
+      const sum = summaries.find((s) => s.scenarioTitle === scene.title);
+      return {
+        sceneId: scene.id,
+        sceneTitle: scene.title,
+        total: sum ? sum.total : records.length,
+        combos: combosByScene[scene.title] || []
+      };
+    });
+    inspectionHistory.saveSnapshot(snapshots);
 
     const buffer = await excelExport.buildExcelBuffer(excelScenarios);
 
