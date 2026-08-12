@@ -362,9 +362,24 @@
           <el-input v-model="aiForm.reportTemplate.extra" type="textarea" :rows="2" placeholder="其他要求（可空）" />
         </el-form-item>
       </el-form>
+      <!-- 模型测试结果（测试连接成功后展示） -->
+      <div v-if="aiTestResult" class="ai-test-result" :class="aiTestResult.ok ? 'ok' : 'fail'">
+        <template v-if="aiTestResult.ok">
+          <div class="ai-test-title">连接成功 · 耗时 {{ aiTestResult.ms }} ms · 模型 {{ aiTestResult.model }}</div>
+          <div class="ai-test-reply">模型回复：{{ aiTestResult.reply }}</div>
+        </template>
+        <template v-else>
+          <div class="ai-test-title">连接失败</div>
+          <div class="ai-test-reply">{{ aiTestResult.error }}</div>
+        </template>
+      </div>
       <template #footer>
-        <el-button @click="aiDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="savingAi" @click="saveAiConfig">保存</el-button>
+        <div class="ai-test-footer">
+          <el-button :loading="testingAi" :icon="Connection" @click="testAiConfig">测试连接</el-button>
+          <span class="ai-test-footer-spacer"></span>
+          <el-button @click="aiDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="savingAi" @click="saveAiConfig">保存</el-button>
+        </div>
       </template>
     </el-dialog>
 
@@ -420,6 +435,8 @@ const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPe
 const aiDialogVisible = ref(false);
 const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 240000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
 const aiToken = ref('');
+const testingAi = ref(false);
+const aiTestResult = ref(null);
 const savingAi = ref(false);
 const aiReport = ref(null);
 const generating = ref(false);
@@ -788,6 +805,31 @@ function openAiConfig() {
 
 function resetAiForm() {
   aiToken.value = '';
+  aiTestResult.value = null;
+}
+
+/** 测试模型连通性：用表单当前值（未保存也能测），不写入配置 */
+async function testAiConfig() {
+  testingAi.value = true;
+  aiTestResult.value = null;
+  try {
+    const data = await request('/api/health-check/ai-test', {
+      method: 'POST',
+      body: JSON.stringify({
+        endpoint: aiForm.endpoint,
+        model: aiForm.model,
+        temperature: aiForm.temperature,
+        timeoutMs: aiForm.timeoutMs,
+        // 自动去掉用户误填的 Bearer 前缀；Token 留空时后端回退到已保存的 Token
+        token: aiToken.value.trim().replace(/^Bearer\s+/i, '') || undefined
+      })
+    });
+    aiTestResult.value = data;
+  } catch (e) {
+    aiTestResult.value = { ok: false, error: e.message || '测试失败' };
+  } finally {
+    testingAi.value = false;
+  }
 }
 
 async function saveAiConfig() {
@@ -1291,5 +1333,38 @@ onMounted(() => {
   font-size: 12px;
   color: #909399;
   margin-left: 8px;
+}
+.ai-test-result {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: break-all;
+}
+.ai-test-result.ok {
+  background: #f0f9eb;
+  border: 1px solid #e1f3d8;
+  color: #529b2e;
+}
+.ai-test-result.fail {
+  background: #fef0f0;
+  border: 1px solid #fde2e2;
+  color: #f56c6c;
+}
+.ai-test-title {
+  font-weight: 600;
+}
+.ai-test-reply {
+  margin-top: 4px;
+  color: #606266;
+}
+.ai-test-footer {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+.ai-test-footer-spacer {
+  flex: 1;
 }
 </style>

@@ -24,6 +24,7 @@ const debugMode = require('../lib/debug-mode');
 const excelExport = require('../lib/excel-export');
 const clusterSummary = require('../lib/cluster-summary');
 const aiConfig = require('../lib/ai-config-store');
+const llm = require('../lib/llm-service');
 const reportGenerator = require('../lib/report-generator');
 const correctionStore = require('../lib/correction-store');
 const emlExport = require('../lib/eml-export');
@@ -422,6 +423,20 @@ router.post('/ai-config', (req, res) => {
   const status = aiConfig.saveConfig(patch);
   logger.info(`[ai-config] save -> endpoint=${status.endpoint} model=${status.model} hasToken=${status.hasToken}`);
   res.json({ code: 0, msg: 'ok', data: status });
+});
+
+/* ---------- 8.2 AI 设置：测试模型连通性（用表单当前值，未保存也能测） ---------- */
+router.post('/ai-test', async (req, res) => {
+  const { endpoint, model, token, temperature, timeoutMs } = req.body || {};
+  try {
+    logger.info('[ai-test] request received');
+    const result = await llm.testConnection({ endpoint, model, token, temperature, timeoutMs });
+    logger.info(`[ai-test] result ok=${result.ok} ms=${result.ms || '-'}`);
+    res.json({ code: 0, msg: result.ok ? 'ok' : result.error, data: result });
+  } catch (e) {
+    logger.error('[ai-test] failed', e);
+    res.json({ code: 1, msg: e.message || '测试失败', data: { ok: false, error: e.message || '测试失败' } });
+  }
 });
 
 /* ---------- 9. 生成 AI 巡检日报（分场景调用大模型，输出三段式 HTML） ---------- */

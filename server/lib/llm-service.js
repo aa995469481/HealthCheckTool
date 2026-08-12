@@ -106,4 +106,75 @@ async function callChat({ system, user } = {}) {
   return { content, finishReason };
 }
 
-module.exports = { callChat };
+/* ---------- 模型连通性测试（AI 设置页「测试连接」用） ---------- */
+
+/**
+ * 用传入的配置（页面表单，可能尚未保存）发起一次极简调用，验证 endpoint/model/token 是否可用。
+ * 缺省字段回退到已保存配置；不写入任何配置。
+ * @param {object} opts { endpoint?, model?, token?, temperature?, timeoutMs? }
+ * @returns {Promise<{ ok: boolean, reply?: string, ms?: number, model?: string, error?: string }>}
+ */
+async function testConnection({ endpoint, model, token, temperature, timeoutMs } = {}) {
+  const cfg = aiConfig.getConfig();
+  const ep = endpoint && String(endpoint).trim() ? String(endpoint).trim() : cfg.endpoint;
+  const mdl = model && String(model).trim() ? String(model).trim() : cfg.model;
+  const rawToken = token && String(token).trim() ? String(token).trim() : cfg.token;
+  const t = timeoutMs && timeoutMs > 0 ? Number(timeoutMs) : cfg.timeoutMs || 240000;
+  if (!rawToken) {
+    return { ok: false, error: 'Token 未填写，请先填写 Token 再测试' };
+  }
+  const tokenClean = rawToken.toLowerCase().startsWith('bearer ')
+    ? rawToken.slice('bearer '.length).trim()
+    : rawToken;
+
+  const body = {
+    model: mdl,
+    messages: [{ role: 'user', content: '请只回复两个字：正常' }],
+    temperature: temperature !== undefined && temperature !== null ? temperature : 0.2,
+    stream: false
+  };
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenClean}` };
+  const startedAt = Date.now();
+  logger.info(`[llm-test] call model=${mdl} endpoint=${ep} token=${maskToken(tokenClean)} timeoutMs=${t}`);
+
+  try {
+    const res = await curlJsonPost(ep, headers, body, t);
+    const usedMs = Date.now() - startedAt;
+    if (res.status !== 200) {
+      const detail = String(res.body || '').slice(0, 300).trim();
+      let reason = `HTTP ${res.status}`;
+      if (res.status === 401 || res.status === 403) reason = 'Token 无效或已过期';
+      else if (res.status === 404) reason = 'API 地址路径错误（应指向 /chat/completions）';
+      else if (res.status === 400) reason = '请求被拒绝，常见原因：模型名不存在或不支持该模型';
+      logger.error(`[llm-test] http ${res.status}`, detail);
+      return { ok: false, error: `${reason}（HTTP ${res.status}）${detail ? '：' + detail : ''}` };
+    }
+    let json;
+    try {
+      json = JSON.parse(res.body);
+    } catch (e) {
+      return { ok: false, error: '响应解析失败（返回内容不是 JSON）：' + String(res.body).slice(0, 200) };
+    }
+    const choice = json.choices && json.choices[0];
+    const content = choice && choice.message ? String(choice.message.content || '') : '';
+    const finishReason = choice ? String(choice.finish_reason || '') : '';
+    if (!content) {
+      return { ok: false, error: `模型返回空内容（finish_reason=${finishReason || 'unknown'}）` };
+    }
+    logger.info(`[llm-test] ok finish=${finishReason} chars=${content.length} ms=${usedMs}`);
+    return { ok: true, reply: content.slice(0, 200), ms: usedMs, model: mdl };
+  } catch (e) {
+    const usedMs = Date.now() - startedAt;
+    const msg = String((e && e.message) || e);
+    logger.error(`[llm-test] failed ms=${usedMs}`, e);
+    if (/timeout/i.test(msg)) {
+      return { ok: false, error: `连接超时（${Math.round(usedMs / 1000)}s）：模型 ${t / 1000}s 内未响应。请检查网络能否访问该 API，或在设置中调大超时时间` };
+    }
+    if (/curl failed/i.test(msg)) {
+      return { ok: false, error: `无法连接到该 API 地址（${msg}）。请检查网络/防火墙是否放行该域名，或确认地址拼写是否正确` };
+    }
+    return { ok: false, error: msg };
+  }
+}
+
+module.exports = { callChat, testConnection };
