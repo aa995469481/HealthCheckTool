@@ -79,7 +79,8 @@ function curlJsonPost(urlStr, headers, bodyObj, timeoutMs) {
     const payload = JSON.stringify(bodyObj);
     const bodyFile = path.join(os.tmpdir(), `hcb-body-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
 
-    const args = ['-s', '-S', '--max-time', String(Math.floor(timeoutMs / 1000))];
+    // --connect-timeout：TCP 建连阶段最多 15s，避免对不可达地址（防火墙静默丢包）干等到 --max-time
+    const args = ['-s', '-S', '--max-time', String(Math.floor(timeoutMs / 1000)), '--connect-timeout', '15'];
     for (const [k, v] of Object.entries(headers)) {
       if (v === undefined || v === null) continue;
       args.push('-H', `${k}: ${v}`);
