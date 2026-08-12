@@ -106,8 +106,9 @@ async function callChat({ system, user } = {}) {
 
       const usedMs = Date.now() - startedAt;
       if (finishReason === 'length') {
-        logger.error(`[llm] finish_reason=length chars=${content.length} ms=${usedMs} — 输出达到 max_tokens 上限，可能被截断`);
-        throw new Error(`模型输出超长（finish_reason=length，已达 max_tokens=${body.max_tokens || '不限'} 上限）：本次输入超出模型上下文限制，请缩小巡检时间范围、减少聚类样本，或在 AI 设置中调大「最大输出 Tokens」`);
+        // 输出达到 max_tokens 上限：保留已生成内容并标记截断，不致命（日报仍可用），提示调大上限
+        logger.warn(`[llm] finish_reason=length chars=${content.length} ms=${usedMs} — 输出达到 max_tokens=${body.max_tokens || '不限'} 上限被截断，内容可能不完整`);
+        return { content, finishReason: 'length', truncated: true };
       }
 
       if (!content) {

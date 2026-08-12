@@ -56,7 +56,7 @@ function trimSample(sample) {
 
 /* ---------- 系统提示词 ---------- */
 
-const SCENE_SYSTEM = `你是资深业务巡检专家，擅长从日志聚类摘要中定位系统问题并给出专业分析。你的输出将被汇总进一份正式巡检日报。要求：语言精炼专业、结构清晰、重点突出，只输出你负责的该场景分析内容（Markdown 格式），不要输出日报其他章节，不要输出多余说明。`;
+const SCENE_SYSTEM = `你是资深业务巡检专家，擅长从日志聚类摘要中定位系统问题并给出专业分析。你的输出将被汇总进一份正式巡检日报。要求：语言精炼专业、结构清晰、重点突出，只输出你负责的该场景分析内容（Markdown 格式），不要输出日报其他章节，不要输出多余说明。输出尽量精简，以要点形式列出，避免大段展开与重复。`;
 
 /* ---------- 文本裁剪 ---------- */
 
@@ -207,7 +207,7 @@ function buildReportSystem(tpl = {}) {
 四、人工分析情况（统计已分析/待确认/已闭环数量与类别分布，引用关键问题对应的人工分析结论，列出待确认问题清单）
 五、整体结论与处置建议（总体健康度、优先处置事项、后续跟进建议）
 
-要求：语言专业、简洁；关键问题必须依据「问题总览」的优先级展开，结合人工分析结论，避免泛泛而谈；直接输出日报正文，不要输出任何解释性文字。`;
+要求：语言专业、简洁；关键问题必须依据「问题总览」的优先级展开，结合人工分析结论，避免泛泛而谈；输出尽量精简，优先用表格与要点控制篇幅，避免冗余；直接输出日报正文，不要输出任何解释性文字。`;
   const extras = [tpl.focus, tpl.format, tpl.extra]
     .map((x) => String(x || '').trim())
     .filter(Boolean);
@@ -364,7 +364,7 @@ async function analyzeScene(ctx, title, maxChars, mock) {
         `请输出该场景的问题分析（主要问题点、可能原因、风险影响评估）。` +
         (batches.length > 1 ? '注意：仅分析本批次给出的内容，各批次结果会合并进同一场景，不要遗漏本批次的主要问题点。' : '');
       const r = await llm.callChat({ system: SCENE_SYSTEM, user });
-      content = r.content;
+      content = r.truncated ? r.content + '\n\n>（注：本批次输出超长被截断，内容可能不完整，可在 AI 设置中调大「最大输出 Tokens」后重新生成）' : r.content;
     }
     parts.push(content);
     logger.info(`[ai-report] scene=${title} batch ${b + 1}/${batches.length} inputChars=${batchText.length} outputChars=${content.length}`);
@@ -524,7 +524,7 @@ async function generateDailyReport({ mock = false } = {}) {
     }
   } else {
     const r = await llm.callChat({ system: buildReportSystem(template), user: reportUser });
-    markdown = r.content;
+    markdown = r.truncated ? r.content + '\n\n>（注：模型输出超长被截断，日报内容可能不完整，建议在 AI 设置中调大「最大输出 Tokens」后重新生成）' : r.content;
   }
 
   // 第三步：转 HTML

@@ -23,7 +23,7 @@ const DEFAULT_CONFIG = {
   temperature: 0.2,
   maxCharsPerPrompt: 12000,
   timeoutMs: 240000,
-  maxTokens: 2000,
+  maxTokens: 4000,
   maxConcurrentScenes: 2,
   reportRules: {
     trendDays: 7,
