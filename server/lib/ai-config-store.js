@@ -22,7 +22,7 @@ const DEFAULT_CONFIG = {
   model: 'DeepSeek_V4_Flash_Client',
   temperature: 0.2,
   maxCharsPerPrompt: 12000,
-  timeoutMs: 120000,
+  timeoutMs: 240000,
   reportRules: {
     trendDays: 7,
     userCountThreshold: 50,

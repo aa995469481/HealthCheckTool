@@ -416,9 +416,9 @@ const debugResultText = ref('');
 /* AI 巡检日报 */
 const defaultReportRules = { trendDays: 7, userCountThreshold: 50, increasePercent: 50, highRiskNew: true, pendingFirst: true, maxProblems: 15 };
 const defaultReportTemplate = { focus: '', format: '', extra: '' };
-const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPerPrompt: 12000, temperature: 0.2, timeoutMs: 120000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
+const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPerPrompt: 12000, temperature: 0.2, timeoutMs: 240000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
 const aiDialogVisible = ref(false);
-const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 120000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
+const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 240000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
 const aiToken = ref('');
 const savingAi = ref(false);
 const aiReport = ref(null);
@@ -766,7 +766,7 @@ async function loadAiConfig() {
     aiStatus.endpoint = data.endpoint || '';
     aiStatus.maxCharsPerPrompt = data.maxCharsPerPrompt || 12000;
     aiStatus.temperature = data.temperature !== undefined ? data.temperature : 0.2;
-    aiStatus.timeoutMs = data.timeoutMs || 120000;
+    aiStatus.timeoutMs = data.timeoutMs || 240000;
     aiStatus.reportRules = { ...defaultReportRules, ...(data.reportRules || {}) };
     aiStatus.reportTemplate = { ...defaultReportTemplate, ...(data.reportTemplate || {}) };
   } catch (e) {
@@ -812,7 +812,7 @@ async function saveAiConfig() {
     aiStatus.endpoint = data.endpoint || '';
     aiStatus.maxCharsPerPrompt = data.maxCharsPerPrompt || 12000;
     aiStatus.temperature = data.temperature !== undefined ? data.temperature : 0.2;
-    aiStatus.timeoutMs = data.timeoutMs || 120000;
+    aiStatus.timeoutMs = data.timeoutMs || 240000;
     aiStatus.reportRules = { ...defaultReportRules, ...(data.reportRules || {}) };
     aiStatus.reportTemplate = { ...defaultReportTemplate, ...(data.reportTemplate || {}) };
     aiDialogVisible.value = false;
