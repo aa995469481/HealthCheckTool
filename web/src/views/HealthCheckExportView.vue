@@ -328,6 +328,10 @@
           <el-input-number v-model="aiForm.timeoutMs" :min="30000" :max="600000" :step="10000" />
           <span class="ai-form-tip">毫秒（默认 120000）</span>
         </el-form-item>
+        <el-form-item label="最大输出 Tokens">
+          <el-input-number v-model="aiForm.maxTokens" :min="0" :max="32000" :step="500" />
+          <span class="ai-form-tip">限制单次模型输出长度，防止超长生成拖慢响应；0 表示不限制（默认 2000）</span>
+        </el-form-item>
 
         <el-divider content-position="left">报告规则与模板</el-divider>
         <el-form-item label="趋势天数">
@@ -431,9 +435,9 @@ const debugResultText = ref('');
 /* AI 巡检日报 */
 const defaultReportRules = { trendDays: 7, userCountThreshold: 50, increasePercent: 50, highRiskNew: true, pendingFirst: true, maxProblems: 15 };
 const defaultReportTemplate = { focus: '', format: '', extra: '' };
-const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPerPrompt: 12000, temperature: 0.2, timeoutMs: 240000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
+const aiStatus = reactive({ hasToken: false, model: '', endpoint: '', maxCharsPerPrompt: 12000, temperature: 0.2, timeoutMs: 240000, maxTokens: 2000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
 const aiDialogVisible = ref(false);
-const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 240000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
+const aiForm = reactive({ endpoint: '', model: '', temperature: 0.2, maxCharsPerPrompt: 12000, timeoutMs: 240000, maxTokens: 2000, reportRules: { ...defaultReportRules }, reportTemplate: { ...defaultReportTemplate } });
 const aiToken = ref('');
 const testingAi = ref(false);
 const aiTestResult = ref(null);
@@ -797,6 +801,7 @@ function openAiConfig() {
   aiForm.temperature = aiStatus.temperature;
   aiForm.maxCharsPerPrompt = aiStatus.maxCharsPerPrompt;
   aiForm.timeoutMs = aiStatus.timeoutMs;
+  aiForm.maxTokens = aiStatus.maxTokens;
   aiForm.reportRules = { ...aiStatus.reportRules };
   aiForm.reportTemplate = { ...aiStatus.reportTemplate };
   aiToken.value = '';
@@ -843,6 +848,7 @@ async function saveAiConfig() {
         temperature: aiForm.temperature,
         maxCharsPerPrompt: aiForm.maxCharsPerPrompt,
         timeoutMs: aiForm.timeoutMs,
+        maxTokens: aiForm.maxTokens,
         reportRules: aiForm.reportRules,
         reportTemplate: aiForm.reportTemplate,
         // 自动去掉用户误填的 Bearer 前缀，避免 Authorization 双写
@@ -855,6 +861,7 @@ async function saveAiConfig() {
     aiStatus.maxCharsPerPrompt = data.maxCharsPerPrompt || 12000;
     aiStatus.temperature = data.temperature !== undefined ? data.temperature : 0.2;
     aiStatus.timeoutMs = data.timeoutMs || 240000;
+    aiStatus.maxTokens = data.maxTokens !== undefined && data.maxTokens !== null ? data.maxTokens : 2000;
     aiStatus.reportRules = { ...defaultReportRules, ...(data.reportRules || {}) };
     aiStatus.reportTemplate = { ...defaultReportTemplate, ...(data.reportTemplate || {}) };
     aiDialogVisible.value = false;

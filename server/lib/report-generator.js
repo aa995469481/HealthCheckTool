@@ -325,6 +325,22 @@ function packBlocks(blocks, maxChars) {
   return batches;
 }
 
+/** 并发池：以 limit 并发执行 fn，按下标写回结果，返回数组保持 items 原始顺序 */
+async function runPool(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  const workers = [];
+  for (let w = 0; w < Math.min(limit, items.length); w++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * 生成单个场景的问题分析（输入超长时按批次多次调用，逐批分析后拼接）
  * @param {object} ctx { summary, problems } 场景摘要 + 问题级组合数据
@@ -397,15 +413,22 @@ async function generateDailyReport({ mock = false } = {}) {
   logger.info(`[ai-report] start scenes=${summaries.length} mock=${mock} maxChars=${maxChars} plan=${planName || '(未命名)'} trendDays=${trendDays} trendFiles=${trend.length}`);
 
   // 第一步：每个场景分批调用，生成该场景的问题分析（含问题级组合数据）
-  const sceneReports = [];
-  for (let i = 0; i < summaries.length; i++) {
-    const title = summaries[i].scenarioTitle || `场景${i + 1}`;
+  // 可控并发（默认 2，最多 3）：串行时 N 个场景 × 单次调用等待，总时长过长，并发可显著缩短
+  const sceneTasks = summaries.map((s, i) => {
+    const title = s.scenarioTitle || `场景${i + 1}`;
     const combos = (analysis.combosByScene && analysis.combosByScene[title]) || [];
     const problems = buildProblems(title, combos, rules, libMap);
-    const sr = await analyzeScene({ summary: summaries[i], problems }, title, maxChars, mock);
-    sceneReports.push({ title, content: sr.content, batches: sr.batches, inputChars: sr.inputChars, problems: problems.slice(0, maxProblems) });
-    logger.info(`[ai-report] scene ${i + 1}/${summaries.length} title=${title} problems=${problems.length} batches=${sr.batches} inputChars=${sr.inputChars} outputChars=${sr.content.length}`);
-  }
+    return { s, i, title, problems };
+  });
+  const concurrency = Math.max(1, Math.min(3, Number(cfg.maxConcurrentScenes) || 2));
+  logger.info(`[ai-report] scene calls concurrency=${concurrency}`);
+  const sceneResults = await runPool(sceneTasks, concurrency, async (task) => {
+    const sr = await analyzeScene({ summary: task.s, problems: task.problems }, task.title, maxChars, mock);
+    logger.info(`[ai-report] scene ${task.i + 1}/${summaries.length} title=${task.title} problems=${task.problems.length} batches=${sr.batches} inputChars=${sr.inputChars} outputChars=${sr.content.length}`);
+    return { title: task.title, content: sr.content, batches: sr.batches, inputChars: sr.inputChars, problems: task.problems.slice(0, maxProblems) };
+  });
+  // runPool 按下标写回，sceneResults 天然保持原始场景顺序
+  const sceneReports = sceneResults;
 
   // 第二步：汇总调用，生成五段式完整日报
   const overviewLines = [

@@ -41,19 +41,21 @@ async function callChat({ system, user } = {}) {
   if (system && String(system).trim()) messages.push({ role: 'system', content: String(system) });
   messages.push({ role: 'user', content: String(user) });
 
-  // 请求体完全对齐已验证成功的 curl 样例（不携带 max_tokens，避免网关差异）
+  // 请求体对齐已验证成功的 curl 样例；额外携带 max_tokens 限制模型输出长度（防止超长生成拖死等待，0 表示不限制）
   const body = {
     model: cfg.model || 'DeepSeek_V4_Flash_Client',
     messages,
     temperature: cfg.temperature !== undefined && cfg.temperature !== null ? cfg.temperature : 0.2,
     stream: false
   };
+  if (cfg.maxTokens && cfg.maxTokens > 0) body.max_tokens = Number(cfg.maxTokens);
 
   const timeoutMs = cfg.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : 120000;
   const startedAt = Date.now();
   logger.info(
     `[llm] call model=${body.model} endpoint=${cfg.endpoint} token=${maskToken(token)} ` +
-    `systemLen=${messages[0] ? messages[0].content.length : 0} userLen=${body.messages[body.messages.length - 1].content.length} timeoutMs=${timeoutMs}`
+    `systemLen=${messages[0] ? messages[0].content.length : 0} userLen=${body.messages[body.messages.length - 1].content.length} ` +
+    `timeoutMs=${timeoutMs} maxTokens=${body.max_tokens || '不限'}`
   );
 
   const headers = {
@@ -65,45 +67,70 @@ async function callChat({ system, user } = {}) {
     logger.info(`[llm] REQUEST BODY:\n${JSON.stringify(body, null, 2)}`);
   }
 
-  const res = await curlJsonPost(cfg.endpoint, headers, body, timeoutMs);
+  // 超时 / HTTP 5xx 自动重试 1 次（网关排队/偶发抖动时提高成功率）；4xx 等确定性错误不重试
+  const MAX_ATTEMPTS = 2;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await curlJsonPost(cfg.endpoint, headers, body, timeoutMs);
 
-  if (res.status !== 200) {
-    logger.error(`[llm] http ${res.status}`, String(res.body).slice(0, 2000));
-    if (res.status === 401 || res.status === 403) {
-      const detail = String(res.body || '').slice(0, 300).trim();
-      throw new Error(
-        `大模型鉴权失败（HTTP ${res.status}）` + (detail ? `，服务端返回：${detail}` : '') +
-        '。请检查 AI 设置中的 Token 是否正确或已过期'
-      );
+      if (res.status !== 200) {
+        logger.error(`[llm] http ${res.status}`, String(res.body).slice(0, 2000));
+        if (res.status === 401 || res.status === 403) {
+          const detail = String(res.body || '').slice(0, 300).trim();
+          throw new Error(
+            `大模型鉴权失败（HTTP ${res.status}）` + (detail ? `，服务端返回：${detail}` : '') +
+            '。请检查 AI 设置中的 Token 是否正确或已过期'
+          );
+        }
+        if (res.status >= 500 && attempt < MAX_ATTEMPTS) {
+          const usedMs = Date.now() - startedAt;
+          logger.warn(`[llm] http ${res.status} attempt ${attempt}/${MAX_ATTEMPTS} ms=${usedMs}，3s 后重试`);
+          await sleep(3000);
+          continue;
+        }
+        throw new Error(`大模型调用失败（HTTP ${res.status}）：${String(res.body).slice(0, 500)}`);
+      }
+
+      let json;
+      try {
+        json = JSON.parse(res.body);
+      } catch (e) {
+        logger.error('[llm] response not json', String(res.body).slice(0, 1000));
+        throw new Error('大模型返回内容解析失败：' + e.message);
+      }
+
+      const choice = json.choices && json.choices[0];
+      const content = choice && choice.message ? String(choice.message.content || '') : '';
+      const finishReason = choice ? String(choice.finish_reason || '') : '';
+
+      const usedMs = Date.now() - startedAt;
+      if (finishReason === 'length') {
+        logger.error(`[llm] finish_reason=length chars=${content.length} ms=${usedMs} — 输出达到 max_tokens 上限，可能被截断`);
+        throw new Error(`模型输出超长（finish_reason=length，已达 max_tokens=${body.max_tokens || '不限'} 上限）：本次输入超出模型上下文限制，请缩小巡检时间范围、减少聚类样本，或在 AI 设置中调大「最大输出 Tokens」`);
+      }
+
+      if (!content) {
+        logger.error('[llm] empty content', String(res.body).slice(0, 1000));
+        throw new Error('大模型返回内容为空');
+      }
+
+      logger.info(`[llm] ok finish=${finishReason} chars=${content.length} ms=${usedMs} attempt=${attempt}/${MAX_ATTEMPTS}`);
+      return { content, finishReason };
+    } catch (e) {
+      lastErr = e;
+      const retryable = /timeout/i.test(e.message);
+      if (!retryable || attempt === MAX_ATTEMPTS) throw e;
+      const usedMs = Date.now() - startedAt;
+      logger.warn(`[llm] attempt ${attempt}/${MAX_ATTEMPTS} failed ms=${usedMs}: ${e.message}，3s 后重试`);
+      await sleep(3000);
     }
-    throw new Error(`大模型调用失败（HTTP ${res.status}）：${String(res.body).slice(0, 500)}`);
   }
+  throw lastErr || new Error('大模型调用失败');
+}
 
-  let json;
-  try {
-    json = JSON.parse(res.body);
-  } catch (e) {
-    logger.error('[llm] response not json', String(res.body).slice(0, 1000));
-    throw new Error('大模型返回内容解析失败：' + e.message);
-  }
-
-  const choice = json.choices && json.choices[0];
-  const content = choice && choice.message ? String(choice.message.content || '') : '';
-  const finishReason = choice ? String(choice.finish_reason || '') : '';
-
-  const usedMs = Date.now() - startedAt;
-  if (finishReason === 'length') {
-    logger.error(`[llm] finish_reason=length chars=${content.length} ms=${usedMs} — 输入超出模型上下文限制`);
-    throw new Error('模型输出超长（finish_reason=length）：本次输入已超出模型上下文限制，请缩小巡检时间范围或减少聚类样本后再试');
-  }
-
-  if (!content) {
-    logger.error('[llm] empty content', String(res.body).slice(0, 1000));
-    throw new Error('大模型返回内容为空');
-  }
-
-  logger.info(`[llm] ok finish=${finishReason} chars=${content.length} ms=${usedMs}`);
-  return { content, finishReason };
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /* ---------- 模型连通性测试（AI 设置页「测试连接」用） ---------- */

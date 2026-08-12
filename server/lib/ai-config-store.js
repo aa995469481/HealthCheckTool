@@ -23,6 +23,8 @@ const DEFAULT_CONFIG = {
   temperature: 0.2,
   maxCharsPerPrompt: 12000,
   timeoutMs: 240000,
+  maxTokens: 2000,
+  maxConcurrentScenes: 2,
   reportRules: {
     trendDays: 7,
     userCountThreshold: 50,
@@ -66,6 +68,8 @@ function getSafeStatus() {
     temperature: cfg.temperature,
     maxCharsPerPrompt: cfg.maxCharsPerPrompt,
     timeoutMs: cfg.timeoutMs,
+    maxTokens: cfg.maxTokens,
+    maxConcurrentScenes: cfg.maxConcurrentScenes,
     reportRules: { ...DEFAULT_CONFIG.reportRules, ...(cfg.reportRules || {}) },
     reportTemplate: { ...DEFAULT_CONFIG.reportTemplate, ...(cfg.reportTemplate || {}) },
     hasToken: Boolean(cfg.token && cfg.token.trim())
