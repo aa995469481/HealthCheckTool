@@ -154,6 +154,29 @@ function problemLine(p, idx) {
   return `${idx}. [${p.sceneTitle}] ${code}：${p.count} 用户（较上次${trend}）｜类别：${p.category || '未归类'}｜状态：${p.status}${flagText}${p.analysis ? '｜人工结论：' + p.analysis : ''}`;
 }
 
+/**
+ * 问题总览 Markdown 表格（数值精确：用户数与较上次变化均为按 uid 去重后的值）
+ * 喂给大模型并要求其问题总览表逐行原样引用，避免大模型自行重算/混用命中条数
+ */
+function buildProblemTable(problems) {
+  if (!Array.isArray(problems) || !problems.length) return '';
+  const rows = [
+    '| # | 场景 | 问题(内码/外码) | 用户数 | 较上次变化 | 问题类别 | 人工状态 | 标记 |',
+    '|---|---|---|---|---|---|---|---|'
+  ];
+  problems.forEach((p, i) => {
+    const trend = p.prev === undefined
+      ? '无上次'
+      : (p.count > p.prev ? `+${p.count - p.prev}` : `-${p.prev - p.count}`);
+    const flags = [];
+    if (p.highRisk) flags.push('高危');
+    if (p.pending) flags.push('待确认');
+    const code = `${p.inCode}${p.extCode ? '/' + p.extCode : ''}`;
+    rows.push(`| ${i + 1} | ${p.sceneTitle} | ${code} | ${p.count} | ${trend} | ${p.category || '未归类'} | ${p.status} | ${flags.join('、') || '-'} |`);
+  });
+  return rows.join('\n');
+}
+
 /** 人工分析情况统计 + 待确认清单（仅统计本次巡检涉及的场景） */
 function buildManualStats(sceneTitles, libMap) {
   const entries = [...libMap.values()].filter((c) => sceneTitles.has(c.sceneTitle));
@@ -207,7 +230,7 @@ function buildReportSystem(tpl = {}) {
 四、人工分析情况（统计已分析/待确认/已闭环数量与类别分布，引用关键问题对应的人工分析结论，列出待确认问题清单）
 五、整体结论与处置建议（总体健康度、优先处置事项、后续跟进建议）
 
-要求：语言专业、简洁；关键问题必须依据「问题总览」的优先级展开，结合人工分析结论，避免泛泛而谈；输出尽量精简，优先用表格与要点控制篇幅，避免冗余；直接输出日报正文，不要输出任何解释性文字。`;
+要求：语言专业、简洁；关键问题必须依据「问题总览」的优先级展开，结合人工分析结论，避免泛泛而谈；「问题总览表」必须严格逐行原样使用给定的问题总览表格数据，「用户数」「较上次变化」等数值禁止自行重新计算、改写或与其他数据（如命中条数）混用；输出尽量精简，优先用表格与要点控制篇幅，避免冗余；直接输出日报正文，不要输出任何解释性文字。`;
   const extras = [tpl.focus, tpl.format, tpl.extra]
     .map((x) => String(x || '').trim())
     .filter(Boolean);
@@ -457,7 +480,7 @@ async function generateDailyReport({ mock = false } = {}) {
   // 问题总览（跨场景 Top，供大模型重点分析）
   const allProblems = sceneReports.flatMap((sr) => sr.problems).slice(0, maxProblems);
   const problemText = allProblems.length
-    ? `\n\n问题总览（关键问题，按优先级排序：高危/待确认优先，供你重点分析与排序）：\n${allProblems.map((p, i) => problemLine(p, i + 1)).join('\n')}\n`
+    ? `\n\n问题总览（关键问题，按优先级排序：高危/待确认优先，供你重点分析与排序。注意：「用户数」与「较上次变化」均为按 uid 去重后的精确值，日报「问题总览表」必须逐行原样使用下表数据，禁止自行重新计算或与命中条数混用）：\n\n${buildProblemTable(allProblems)}\n`
     : '';
 
   // 人工矫正意见（全局生效，喂给汇总调用，不重复出现在各场景分析 prompt）
