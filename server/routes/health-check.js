@@ -34,6 +34,12 @@ const inspectionHistory = require('../lib/inspection-history');
 
 const router = express.Router();
 
+/** 从请求中解析框架标识（single | dual，默认 single，非法值回退 single） */
+function fwOf(req) {
+  const fw = (req.body && req.body.framework) || (req.query && req.query.framework) || 'single';
+  return fw === 'dual' ? 'dual' : 'single';
+}
+
 /* ---------- 巡检结果缓存（inspectCacheId，2h TTL） ---------- */
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const CACHE_MAX = 24;
@@ -109,8 +115,9 @@ router.post('/secrets', (req, res) => {
 
 /* ---------- 2. 场景目录（自定义巡检场景，用户在巡检场景管理页维护） ---------- */
 router.get('/scenarios', (req, res) => {
-  const scenes = sceneStore.listScenes();
-  logger.info(`[scenarios] list -> ${scenes.length} custom scenes`);
+  const fw = fwOf(req);
+  const scenes = sceneStore.listScenes(fw);
+  logger.info(`[scenarios] list -> ${scenes.length} custom scenes framework=${fw}`);
   res.json({ code: 0, msg: 'ok', data: { scenarios: scenes } });
 });
 
@@ -139,7 +146,7 @@ router.post('/scenes', (req, res) => {
     if (!scene.table) {
       return res.json({ code: 1, msg: '场景缺少表名 table' });
     }
-    const saved = sceneStore.saveScene(scene);
+    const saved = sceneStore.saveScene(scene, fwOf(req));
     res.json({ code: 0, msg: 'ok', data: saved });
   } catch (e) {
     logger.error('[scenes] save failed', e);
@@ -149,7 +156,7 @@ router.post('/scenes', (req, res) => {
 
 /* ---------- 2.3 巡检场景管理：删除场景 ---------- */
 router.delete('/scenes/:id', (req, res) => {
-  const ok = sceneStore.deleteScene(req.params.id);
+  const ok = sceneStore.deleteScene(req.params.id, fwOf(req));
   if (!ok) return res.json({ code: 1, msg: '场景不存在' });
   res.json({ code: 0, msg: 'ok' });
 });
@@ -157,7 +164,8 @@ router.delete('/scenes/:id', (req, res) => {
 /* ---------- 2.4 巡检场景管理：导出全部场景为 JSON 文件 ---------- */
 router.get('/scenes/export', (req, res) => {
   try {
-    const json = sceneStore.exportJson();
+    const fw = fwOf(req);
+    const json = sceneStore.exportJson(fw);
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const fname = `inspection-scenes-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
@@ -175,8 +183,8 @@ router.post('/scenes/import', (req, res) => {
   const { content } = req.body || {};
   try {
     if (!content || !String(content).trim()) return res.json({ code: 1, msg: '未收到文件内容' });
-    const result = sceneStore.importJson(String(content));
-    logger.info(`[scenes] import result=${JSON.stringify(result)}`);
+    const result = sceneStore.importJson(String(content), fwOf(req));
+    logger.info(`[scenes] import result=${JSON.stringify(result)} framework=${fwOf(req)}`);
     res.json({ code: 0, msg: 'ok', data: result });
   } catch (e) {
     logger.error('[scenes] import failed', e);
@@ -186,9 +194,10 @@ router.post('/scenes/import', (req, res) => {
 
 /* ---------- 3. 巡检计划：列表 ---------- */
 router.get('/inspection-profiles', (req, res) => {
-  const profiles = profileStore.listProfiles();
-  const activeProfileId = profileStore.getActiveProfileId();
-  logger.info(`[profiles] list -> ${profiles.length} profiles, active=${activeProfileId || 'none'}`);
+  const fw = fwOf(req);
+  const profiles = profileStore.listProfiles(fw);
+  const activeProfileId = profileStore.getActiveProfileId(fw);
+  logger.info(`[profiles] list -> ${profiles.length} profiles, active=${activeProfileId || 'none'} framework=${fw}`);
   res.json({ code: 0, msg: 'ok', data: { profiles, activeProfileId } });
 });
 
@@ -205,7 +214,7 @@ router.post('/inspection-profiles', (req, res) => {
     beginTimestamp: beginTimestamp || '',
     endTimestamp: endTimestamp || '',
     enabled_scenarios: Array.isArray(enabled_scenarios) ? enabled_scenarios : []
-  });
+  }, fwOf(req));
   res.json({ code: 0, msg: 'ok', data: profile });
 });
 
@@ -222,8 +231,9 @@ router.post('/export-json', async (req, res) => {
   );
 
   try {
+    const fw = fwOf(req);
     // 读取自定义巡检场景，对每个启用的场景执行真实查询
-    const scenes = sceneStore.listScenes();
+    const scenes = sceneStore.listScenes(fw);
     const sceneMap = new Map(scenes.map((s) => [s.id, s]));
     const queryResults = new Map();
     for (const id of profile.enabled_scenarios) {
@@ -250,7 +260,7 @@ router.post('/export-json', async (req, res) => {
       queryResults.set(id, q);
       logger.info(`[export] scenario=${id} done total=${q.total} fetched=${q.records.length} pages=${q.pages}`);
       // 自动更新失败场景库用户数量（该场景下内码+外码组合本次巡检命中的去重用户数，按 uid 去重）
-      const hitUpdated = failureLibrary.updateUserCounts(scene, q.records);
+      const hitUpdated = failureLibrary.updateUserCounts(scene, q.records, fw);
       if (hitUpdated > 0) logger.info(`[export] failure-library users updated=${hitUpdated} scenario=${id}`);
     }
 
@@ -267,15 +277,15 @@ router.post('/export-json', async (req, res) => {
       excelScenarios.push({ scene, records: q.records });
     }
 
-    // 生成聚类摘要（供大模型分析），持久化到 server/data/analysis/
-    const analysisDir = path.join(__dirname, '..', 'data', 'analysis');
+    // 生成聚类摘要（供大模型分析），持久化到 data/analysis/（单框架）或 data/analysis-dual/（双框架）
+    const analysisDir = path.join(__dirname, '..', 'data', fw === 'dual' ? 'analysis-dual' : 'analysis');
     if (!fs.existsSync(analysisDir)) fs.mkdirSync(analysisDir, { recursive: true });
-    const summaries = excelScenarios.map(({ scene, records }) => clusterSummary.buildClusterSummary(scene, records));
+    const summaries = excelScenarios.map(({ scene, records }) => clusterSummary.buildClusterSummary(scene, records, fw));
     const markdownTexts = summaries.map((s) => clusterSummary.toMarkdown(s));
     // 精确统计「内码+外码」组合命中数，供失败场景库一键导入带出完整组合
     const combosByScene = {};
     for (const { scene, records } of excelScenarios) {
-      const combos = failureLibrary.countCombos(scene, records);
+      const combos = failureLibrary.countCombos(scene, records, fw);
       if (combos.length) combosByScene[scene.title] = combos;
     }
     const analysisFile = path.join(analysisDir, `cluster-${Date.now()}.json`);
@@ -305,7 +315,7 @@ router.post('/export-json', async (req, res) => {
         combos: combosByScene[scene.title] || []
       };
     });
-    inspectionHistory.saveSnapshot(snapshots);
+    inspectionHistory.saveSnapshot(snapshots, fw);
 
     const buffer = await excelExport.buildExcelBuffer(excelScenarios);
 
@@ -313,7 +323,7 @@ router.post('/export-json', async (req, res) => {
     const stamp =
       `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}` +
       `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-    const filename = `health-check-${stamp}.xlsx`;
+    const filename = `health-check-${fw === 'dual' ? 'dual' : 'single'}-${stamp}.xlsx`;
 
     logger.info(`[export] done scenarios=${excelScenarios.length} excelSize=${buffer.length}B filename=${filename}`);
     res.setHeader(
@@ -379,15 +389,16 @@ router.post('/debug/run-query', async (req, res) => {
   }
 });
 
-/* ---------- 6. 读取聚类摘要（供页面展示 / AI 分析） ---------- */
+/* ---------- 6. 读取聚类摘要（供页面展示 / AI 分析，按框架） ---------- */
 router.get('/analysis/latest', (req, res) => {
-  const file = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
+  const fw = fwOf(req);
+  const file = path.join(__dirname, '..', 'data', fw === 'dual' ? 'analysis-dual' : 'analysis', 'latest.json');
   if (!fs.existsSync(file)) {
     return res.json({ code: 1, msg: '暂无聚类摘要，请先执行巡检' });
   }
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    logger.info(`[analysis] latest -> plan=${data.plan} scenes=${(data.summaries || []).length}`);
+    logger.info(`[analysis] latest -> plan=${data.plan} scenes=${(data.summaries || []).length} framework=${fw}`);
     res.json({ code: 0, msg: 'ok', data });
   } catch (e) {
     logger.error('[analysis] read latest failed', e);
@@ -439,12 +450,13 @@ router.post('/ai-test', async (req, res) => {
   }
 });
 
-/* ---------- 9. 生成 AI 巡检日报（分场景调用大模型，输出三段式 HTML） ---------- */
+/* ---------- 9. 生成 AI 巡检日报（分场景调用大模型，输出五段式 HTML，按框架） ---------- */
 router.post('/ai-report', async (req, res) => {
   const { mock } = req.body || {};
+  const fw = fwOf(req);
   try {
-    logger.info(`[ai-report] request received mock=${!!mock}`);
-    const result = await reportGenerator.generateDailyReport({ mock: mock === true });
+    logger.info(`[ai-report] request received mock=${!!mock} framework=${fw}`);
+    const result = await reportGenerator.generateDailyReport({ mock: mock === true, framework: fw });
     res.json({ code: 0, msg: 'ok', data: result });
   } catch (e) {
     logger.error('[ai-report] failed', e);
@@ -529,10 +541,11 @@ router.post('/ai-report-eml', (req, res) => {
   }
 });
 
-/* ---------- 12. 巡检失败场景库：列表 ---------- */
+/* ---------- 12. 巡检失败场景库：列表（按框架） ---------- */
 router.get('/failure-library', (req, res) => {
-  const items = failureLibrary.list();
-  logger.info(`[failure-library] list -> ${items.length}`);
+  const fw = fwOf(req);
+  const items = failureLibrary.list(fw);
+  logger.info(`[failure-library] list -> ${items.length} framework=${fw}`);
   res.json({ code: 0, msg: 'ok', data: { items } });
 });
 
@@ -540,7 +553,7 @@ router.get('/failure-library', (req, res) => {
 router.post('/failure-library', (req, res) => {
   const { sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension } = req.body || {};
   try {
-    const item = failureLibrary.add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension });
+    const item = failureLibrary.add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension }, fwOf(req));
     res.json({ code: 0, msg: 'ok', data: item });
   } catch (e) {
     logger.warn(`[failure-library] add failed: ${e.message}`);
@@ -550,36 +563,37 @@ router.post('/failure-library', (req, res) => {
 
 /* ---------- 12.2 巡检失败场景库：更新 ---------- */
 router.put('/failure-library/:id', (req, res) => {
-  const item = failureLibrary.update(req.params.id, req.body || {});
+  const item = failureLibrary.update(req.params.id, req.body || {}, fwOf(req));
   if (!item) return res.json({ code: 1, msg: '案例不存在' });
   res.json({ code: 0, msg: 'ok', data: item });
 });
 
 /* ---------- 12.3 巡检失败场景库：删除 ---------- */
 router.delete('/failure-library/:id', (req, res) => {
-  const ok = failureLibrary.remove(req.params.id);
+  const ok = failureLibrary.remove(req.params.id, fwOf(req));
   if (!ok) return res.json({ code: 1, msg: '案例不存在' });
   res.json({ code: 0, msg: 'ok' });
 });
 
 /* ---------- 12.3.1 巡检失败场景库：全部清理 ---------- */
 router.delete('/failure-library', (req, res) => {
-  const count = failureLibrary.clearAll();
+  const count = failureLibrary.clearAll(fwOf(req));
   logger.info(`[failure-library] clear all -> ${count}`);
   res.json({ code: 0, msg: 'ok', data: { cleared: count } });
 });
 
-/* ---------- 12.4 巡检失败场景库：从最新聚类摘要一键导入 ---------- */
+/* ---------- 12.4 巡检失败场景库：从最新聚类摘要一键导入（按框架） ---------- */
 router.post('/failure-library/import', (req, res) => {
   try {
-    const analysisFile = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
+    const fw = fwOf(req);
+    const analysisFile = path.join(__dirname, '..', 'data', fw === 'dual' ? 'analysis-dual' : 'analysis', 'latest.json');
     if (!fs.existsSync(analysisFile)) {
       return res.json({ code: 1, msg: '暂无聚类摘要，请先执行巡检' });
     }
     const analysisData = JSON.parse(fs.readFileSync(analysisFile, 'utf-8'));
-    const scenes = sceneStore.listScenes();
-    const result = failureLibrary.importFromSummaries(analysisData.summaries || [], scenes, analysisData.combosByScene || {});
-    logger.info(`[failure-library] import result=${JSON.stringify(result)}`);
+    const scenes = sceneStore.listScenes(fw);
+    const result = failureLibrary.importFromSummaries(analysisData.summaries || [], scenes, analysisData.combosByScene || {}, fw);
+    logger.info(`[failure-library] import result=${JSON.stringify(result)} framework=${fw}`);
     res.json({ code: 0, msg: 'ok', data: result });
   } catch (e) {
     logger.error('[failure-library] import failed', e);
@@ -587,13 +601,14 @@ router.post('/failure-library/import', (req, res) => {
   }
 });
 
-/* ---------- 12.5 巡检失败场景库：导出 CSV 文件下载 ---------- */
+/* ---------- 12.5 巡检失败场景库：导出 CSV 文件下载（按框架） ---------- */
 router.get('/failure-library/export', (req, res) => {
   try {
-    const csv = failureLibrary.exportCsv();
+    const fw = fwOf(req);
+    const csv = failureLibrary.exportCsv(fw);
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
-    const fname = `failure-library-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
+    const fname = `failure-library-${fw}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename=${fname}`);
     res.send(csv);
@@ -604,12 +619,12 @@ router.get('/failure-library/export', (req, res) => {
   }
 });
 
-/* ---------- 12.6 巡检失败场景库：从 CSV 文件导入（覆盖更新） ---------- */
+/* ---------- 12.6 巡检失败场景库：从 CSV 文件导入（覆盖更新，按框架） ---------- */
 router.post('/failure-library/import-file', (req, res) => {
   const { csv } = req.body || {};
   try {
     if (!csv || !String(csv).trim()) return res.json({ code: 1, msg: '未收到文件内容' });
-    const result = failureLibrary.importCsv(String(csv));
+    const result = failureLibrary.importCsv(String(csv), fwOf(req));
     logger.info(`[failure-library] import csv result=${JSON.stringify(result)}`);
     res.json({ code: 0, msg: 'ok', data: result });
   } catch (e) {

@@ -10,17 +10,24 @@ const { logger } = require('./logger');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const SCENES_FILE = path.join(DATA_DIR, 'inspection-scenes.json');
+const SCENES_FILE_DUAL = path.join(DATA_DIR, 'inspection-scenes-dual.json');
+
+/** 按框架解析数据文件：单框架沿用原文件（零迁移），双框架使用 -dual 文件（不存在时视为空库） */
+function fileFor(framework) {
+  return framework === 'dual' ? SCENES_FILE_DUAL : SCENES_FILE;
+}
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-/** 读取全部场景 */
-function listScenes() {
+/** 读取全部场景（framework: single | dual，默认 single） */
+function listScenes(framework) {
   ensureDir();
-  if (!fs.existsSync(SCENES_FILE)) return [];
+  const file = fileFor(framework);
+  if (!fs.existsSync(file)) return [];
   try {
-    const json = JSON.parse(fs.readFileSync(SCENES_FILE, 'utf-8'));
+    const json = JSON.parse(fs.readFileSync(file, 'utf-8'));
     return Array.isArray(json.scenes) ? json.scenes : [];
   } catch (e) {
     logger.error('[scenes] read failed', e);
@@ -28,11 +35,11 @@ function listScenes() {
   }
 }
 
-function writeScenes(scenes) {
+function writeScenes(scenes, framework) {
   ensureDir();
   try {
-    fs.writeFileSync(SCENES_FILE, JSON.stringify({ scenes }, null, 2), 'utf-8');
-    logger.info(`[scenes] written count=${scenes.length}`);
+    fs.writeFileSync(fileFor(framework), JSON.stringify({ scenes }, null, 2), 'utf-8');
+    logger.info(`[scenes] written count=${scenes.length} framework=${framework || 'single'}`);
   } catch (e) {
     logger.error('[scenes] write failed', e);
     throw e;
@@ -45,8 +52,8 @@ function formatTime(date = new Date()) {
 }
 
 /** 保存场景（无 id 则新建，有 id 则更新） */
-function saveScene(scene) {
-  const scenes = listScenes();
+function saveScene(scene, framework) {
+  const scenes = listScenes(framework);
   let target;
   if (scene.id) {
     target = scenes.find((s) => s.id === scene.id);
@@ -62,24 +69,24 @@ function saveScene(scene) {
     };
     scenes.push(target);
   }
-  writeScenes(scenes);
-  logger.info(`[scenes] saved id=${target.id} title=${target.title} table=${target.table}`);
+  writeScenes(scenes, framework);
+  logger.info(`[scenes] saved id=${target.id} title=${target.title} table=${target.table} framework=${framework || 'single'}`);
   return target;
 }
 
 /** 删除场景 */
-function deleteScene(id) {
-  const scenes = listScenes();
+function deleteScene(id, framework) {
+  const scenes = listScenes(framework);
   const next = scenes.filter((s) => s.id !== id);
   if (next.length === scenes.length) return false;
-  writeScenes(next);
+  writeScenes(next, framework);
   logger.info(`[scenes] deleted id=${id}`);
   return true;
 }
 
 /** 按 id 查场景 */
-function getScene(id) {
-  return listScenes().find((s) => s.id === id) || null;
+function getScene(id, framework) {
+  return listScenes(framework).find((s) => s.id === id) || null;
 }
 
 /* ---------- 场景导出 / 导入（JSON 无损，按标题覆盖更新） ---------- */
@@ -105,10 +112,10 @@ function normalizeScene(raw) {
 }
 
 /** 导出全部场景为 JSON 字符串（含 id/createdAt，便于完整往返） */
-function exportJson() {
-  const scenes = listScenes();
+function exportJson(framework) {
+  const scenes = listScenes(framework);
   const payload = { version: 1, exportedAt: formatTime(), scenes };
-  logger.info(`[scenes] export count=${scenes.length}`);
+  logger.info(`[scenes] export count=${scenes.length} framework=${framework || 'single'}`);
   return JSON.stringify(payload, null, 2);
 }
 
@@ -118,7 +125,7 @@ function exportJson() {
  * @param {string|object} json JSON 字符串或已解析对象（支持 scenes 数组或直接数组）
  * @returns {{ added: number, updated: number, skipped: number }}
  */
-function importJson(json) {
+function importJson(json, framework) {
   let data;
   try {
     data = typeof json === 'string' ? JSON.parse(json) : json;
@@ -127,7 +134,7 @@ function importJson(json) {
   }
   const arr = Array.isArray(data) ? data : (data && Array.isArray(data.scenes) ? data.scenes : null);
   if (!arr) throw new Error('JSON 内容不是场景数组（期望 scenes 数组）');
-  const scenes = listScenes();
+  const scenes = listScenes(framework);
   const byTitle = new Map(scenes.map((s) => [s.title, s]));
   let added = 0, updated = 0, skipped = 0;
   for (const raw of arr) {
@@ -148,8 +155,8 @@ function importJson(json) {
       added++;
     }
   }
-  writeScenes(scenes);
-  logger.info(`[scenes] import added=${added} updated=${updated} skipped=${skipped}`);
+  writeScenes(scenes, framework);
+  logger.info(`[scenes] import added=${added} updated=${updated} skipped=${skipped} framework=${framework || 'single'}`);
   return { added, updated, skipped };
 }
 

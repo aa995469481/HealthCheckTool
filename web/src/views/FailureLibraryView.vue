@@ -168,8 +168,11 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Refresh, Download, Delete, Upload } from '@element-plus/icons-vue';
+
+const route = useRoute();
 
 const CATEGORY_OPTIONS = ['端侧问题', 'SP问题', '云侧问题', '非问题', '待确认'];
 const STATUS_OPTIONS = ['待确认', '已分析', '已闭环'];
@@ -225,7 +228,9 @@ function resetFilters() {
 }
 
 async function request(url, options = {}) {
-  const res = await fetch(url, {
+  const fw = route.meta.framework || 'single';
+  const sep = url.includes('?') ? '&' : '?';
+  const res = await fetch(`${url}${sep}framework=${fw}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options
   });
@@ -392,7 +397,8 @@ async function importFromAnalysis() {
 /** 导出 CSV：请求后端生成文件并触发浏览器下载 */
 async function exportCsv() {
   try {
-    const res = await fetch('/api/health-check/failure-library/export');
+    const fw = route.meta.framework || 'single';
+    const res = await fetch(`/api/health-check/failure-library/export?framework=${fw}`);
     if (!res.ok) throw new Error(`导出失败（HTTP ${res.status}）`);
     const blob = await res.blob();
     const d = new Date();

@@ -117,7 +117,7 @@ function pickSamples(records, focusFields, versionField) {
  * @param {Array}  records 原始记录数组
  * @returns {object} 聚类摘要
  */
-function buildClusterSummary(scene, records) {
+function buildClusterSummary(scene, records, framework) {
   const { focusFields, versionField } = resolveFields(scene);
   // 聚类字段：场景配置优先；缺失时默认内码 + 外码
   let clusterFields = Array.isArray(scene && scene.clusterFields) && scene.clusterFields.length
@@ -135,7 +135,7 @@ function buildClusterSummary(scene, records) {
     return arr.map(String).filter((f) => focusFields.includes(f));
   };
   // 剔除失败场景库中已确认「非问题」的记录（匹配 场景+内码+外码+卡维度），不影响失败场景库数据
-  const isNonProblem = failureLibrary.buildNonProblemFilter(scene);
+  const isNonProblem = failureLibrary.buildNonProblemFilter(scene, framework);
   const allRecords = isNonProblem ? (records || []).filter((r) => !isNonProblem(r)) : (records || []);
   const total = allRecords.length;
   const excludedCount = (Array.isArray(records) ? records.length : 0) - total;

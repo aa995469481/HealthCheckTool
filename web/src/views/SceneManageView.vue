@@ -250,8 +250,11 @@
 
 <script setup>
 import { ref, onMounted, nextTick } from 'vue';
+import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Refresh, CircleCheck, Download, Upload } from '@element-plus/icons-vue';
+
+const route = useRoute();
 
 const inputUrl = ref('');
 const inputBody = ref('');
@@ -271,7 +274,9 @@ const focusInput = ref('');
 const focusInputRef = ref();
 
 async function request(url, options = {}) {
-  const res = await fetch(url, {
+  const fw = route.meta.framework || 'single';
+  const sep = url.includes('?') ? '&' : '?';
+  const res = await fetch(`${url}${sep}framework=${fw}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options
   });
@@ -296,7 +301,8 @@ async function loadScenes() {
 async function exportScenes() {
   exporting.value = true;
   try {
-    const res = await fetch('/api/health-check/scenes/export');
+    const fw = route.meta.framework || 'single';
+    const res = await fetch(`/api/health-check/scenes/export?framework=${fw}`);
     if (!res.ok) throw new Error(`导出失败（HTTP ${res.status}）`);
     const blob = await res.blob();
     const d = new Date();

@@ -13,24 +13,51 @@
         text-color="rgba(255, 255, 255, 0.65)"
         active-text-color="#ffffff"
       >
-        <el-menu-item index="/health-check-export">
-          <el-icon><DataAnalysis /></el-icon>
-          <span>业务巡检</span>
-        </el-menu-item>
-        <el-menu-item index="/scene-manage">
-          <el-icon><Files /></el-icon>
-          <span>巡检场景管理</span>
-        </el-menu-item>
-        <el-menu-item index="/failure-library">
-          <el-icon><Notebook /></el-icon>
-          <span>巡检失败场景库</span>
-        </el-menu-item>
+        <el-sub-menu index="single">
+          <template #title>
+            <el-icon><Monitor /></el-icon>
+            <span>单框架交通卡</span>
+          </template>
+          <el-menu-item index="/single/health-check-export">
+            <el-icon><DataAnalysis /></el-icon>
+            <span>业务巡检</span>
+          </el-menu-item>
+          <el-menu-item index="/single/scene-manage">
+            <el-icon><Files /></el-icon>
+            <span>巡检场景管理</span>
+          </el-menu-item>
+          <el-menu-item index="/single/failure-library">
+            <el-icon><Notebook /></el-icon>
+            <span>巡检失败场景库</span>
+          </el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="dual">
+          <template #title>
+            <el-icon><Connection /></el-icon>
+            <span>双框架交通卡</span>
+          </template>
+          <el-menu-item index="/dual/health-check-export">
+            <el-icon><DataAnalysis /></el-icon>
+            <span>业务巡检</span>
+          </el-menu-item>
+          <el-menu-item index="/dual/scene-manage">
+            <el-icon><Files /></el-icon>
+            <span>巡检场景管理</span>
+          </el-menu-item>
+          <el-menu-item index="/dual/failure-library">
+            <el-icon><Notebook /></el-icon>
+            <span>巡检失败场景库</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 
     <el-container class="layout-body">
       <el-header class="layout-header">
         <div class="header-left">
+          <el-tag v-if="$route.meta.framework" size="small" type="primary" effect="plain" class="fw-tag">
+            {{ $route.meta.framework === 'dual' ? '双框架交通卡' : '单框架交通卡' }}
+          </el-tag>
           <span class="page-title">{{ $route.meta.title || '' }}</span>
         </div>
         <div class="header-right">
@@ -112,6 +139,14 @@ body {
   font-size: 16px;
   font-weight: 600;
   color: #303133;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.fw-tag {
+  flex-shrink: 0;
 }
 .header-right {
   display: flex;

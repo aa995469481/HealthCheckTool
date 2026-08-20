@@ -27,6 +27,12 @@ const failureLibrary = require('./failure-library-store');
 const inspectionHistory = require('./inspection-history');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'analysis', 'latest.json');
+const ANALYSIS_FILE_DUAL = path.join(__dirname, '..', 'data', 'analysis-dual', 'latest.json');
+
+/** 按框架解析最新聚类摘要文件 */
+function analysisFileFor(framework) {
+  return framework === 'dual' ? ANALYSIS_FILE_DUAL : ANALYSIS_FILE;
+}
 
 /* ---------- 样本裁剪约束（对齐用户提供的参考实现） ---------- */
 
@@ -86,9 +92,9 @@ const DEFAULT_RULES = {
 };
 
 /** 失败场景库索引：key = `${sceneTitle}|${inCode}|${extCode}` -> entry */
-function buildLibMap() {
+function buildLibMap(framework) {
   const map = new Map();
-  for (const c of failureLibrary.list()) {
+  for (const c of failureLibrary.list(framework)) {
     if (c && c.sceneTitle && (c.inCode || c.extCode)) {
       map.set(`${c.sceneTitle}|${c.inCode || ''}|${c.extCode || ''}`, c);
     }
@@ -410,14 +416,15 @@ function mockSceneReport(title, markdown) {
 
 /**
  * 生成巡检日报（五段式，含问题总览/关键问题/人工分析情况/近 N 天趋势）
- * @param {object} opts { mock?: boolean }
+ * @param {object} opts { mock?: boolean, framework?: 'single'|'dual' }
  * @returns {Promise<{ markdown, html, sceneReports, meta }>}
  */
-async function generateDailyReport({ mock = false } = {}) {
-  if (!fs.existsSync(ANALYSIS_FILE)) {
+async function generateDailyReport({ mock = false, framework = 'single' } = {}) {
+  const file = analysisFileFor(framework);
+  if (!fs.existsSync(file)) {
     throw new Error('暂无巡检数据，请先执行巡检（生成聚类摘要）后再生成日报');
   }
-  const analysis = JSON.parse(fs.readFileSync(ANALYSIS_FILE, 'utf-8'));
+  const analysis = JSON.parse(fs.readFileSync(file, 'utf-8'));
   const summaries = Array.isArray(analysis.summaries) ? analysis.summaries : [];
   if (summaries.length === 0) {
     throw new Error('巡检数据中没有场景摘要，请先执行巡检');
@@ -430,8 +437,8 @@ async function generateDailyReport({ mock = false } = {}) {
   const template = { ...(cfg.reportTemplate || {}) };
   const trendDays = Math.max(1, Number(rules.trendDays) || DEFAULT_RULES.trendDays);
   const maxProblems = Math.max(1, Number(rules.maxProblems) || DEFAULT_RULES.maxProblems);
-  const trend = inspectionHistory.loadTrend(trendDays);
-  const libMap = buildLibMap();
+  const trend = inspectionHistory.loadTrend(trendDays, framework);
+  const libMap = buildLibMap(framework);
 
   logger.info(`[ai-report] start scenes=${summaries.length} mock=${mock} maxChars=${maxChars} plan=${planName || '(未命名)'} trendDays=${trendDays} trendFiles=${trend.length}`);
 
@@ -493,7 +500,7 @@ async function generateDailyReport({ mock = false } = {}) {
     : '';
 
   // 失败场景库参考（人工维护的案例分析，按场景+内码+外码组织，喂给汇总调用）
-  const failureText = failureLibrary.aiReferenceText();
+  const failureText = failureLibrary.aiReferenceText(framework);
   const failureBlock = failureText
     ? `\n\n以下为巡检失败场景库中的人工案例分析（用于判断问题根因与处置方向，请参考并结合到对应场景的分析与建议中）：\n${failureText}\n`
     : '';

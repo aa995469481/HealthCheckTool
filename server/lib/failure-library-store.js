@@ -16,6 +16,12 @@ const { logger } = require('./logger');
 const sceneStore = require('./scene-store');
 
 const FILE = path.join(__dirname, '..', 'data', 'failure-library.json');
+const FILE_DUAL = path.join(__dirname, '..', 'data', 'failure-library-dual.json');
+
+/** 按框架解析数据文件：单框架沿用原文件（零迁移），双框架使用 -dual 文件（不存在时视为空库） */
+function fileFor(framework) {
+  return framework === 'dual' ? FILE_DUAL : FILE;
+}
 
 /* ---------- 字段枚举与归一化（新增维护字段） ---------- */
 const CATEGORY_ENUM = ['端侧问题', 'SP问题', '云侧问题', '非问题', '待确认'];
@@ -34,10 +40,11 @@ const normalizeCard = (v) => {
 /** CSV 表头（导出/导入共用，列顺序固定） */
 const CSV_HEADERS = ['场景', '内码', '外码', '卡维度', '问题类别', '问题状态', '案例分析', '最近用户数', '上一次用户数', '最近检查', '更新时间'];
 
-function load() {
+function load(framework) {
+  const file = fileFor(framework);
   try {
-    if (!fs.existsSync(FILE)) return [];
-    const arr = JSON.parse(fs.readFileSync(FILE, 'utf-8'));
+    if (!fs.existsSync(file)) return [];
+    const arr = JSON.parse(fs.readFileSync(file, 'utf-8'));
     const result = Array.isArray(arr) ? arr : [];
     // 旧数据迁移：默认待确认 -> 待确认；卡维度 NA -> All；latestHitCount -> latestUserCount；缺失字段补默认值
     let changed = false;
@@ -52,7 +59,7 @@ function load() {
         changed = true;
       }
     }
-    if (changed) save(result);
+    if (changed) save(result, framework);
     return result;
   } catch (e) {
     logger.warn(`[failure-library] load failed: ${e.message}`);
@@ -60,8 +67,8 @@ function load() {
   }
 }
 
-function save(list) {
-  fs.writeFileSync(FILE, JSON.stringify(list, null, 2), 'utf-8');
+function save(list, framework) {
+  fs.writeFileSync(fileFor(framework), JSON.stringify(list, null, 2), 'utf-8');
 }
 
 /** 从场景的聚类字段里解析内码/外码字段名（默认 walletEventInCode / walletEventExtCode） */
@@ -85,8 +92,8 @@ function fieldValue(record, field) {
 }
 
 /** 全部案例（按用户数量降序，用户数量相同按更新时间倒序） */
-function list() {
-  return load().sort((a, b) => {
+function list(framework) {
+  return load(framework).sort((a, b) => {
     const ua = a.latestUserCount || 0;
     const ub = b.latestUserCount || 0;
     if (ua !== ub) return ub - ua;
@@ -95,8 +102,8 @@ function list() {
 }
 
 /** 新增案例 */
-function add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension }) {
-  const list = load();
+function add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status, cardDimension }, framework) {
+  const list = load(framework);
   const now = new Date().toISOString();
   const item = {
     id: crypto.randomBytes(8).toString('hex'),
@@ -116,14 +123,14 @@ function add({ sceneId, sceneTitle, inCode, extCode, analysis, category, status,
   if (!item.sceneTitle) throw new Error('请选择场景');
   if (!item.inCode && !item.extCode) throw new Error('内码和外码至少填写一个');
   list.push(item);
-  save(list);
-  logger.info(`[failure-library] add id=${item.id} scene=${item.sceneTitle} in=${item.inCode || '-'} ext=${item.extCode || '-'}`);
+  save(list, framework);
+  logger.info(`[failure-library] add id=${item.id} scene=${item.sceneTitle} in=${item.inCode || '-'} ext=${item.extCode || '-'} framework=${framework || 'single'}`);
   return item;
 }
 
 /** 更新案例 */
-function update(id, patch = {}) {
-  const list = load();
+function update(id, patch = {}, framework) {
+  const list = load(framework);
   const item = list.find((c) => c.id === id);
   if (!item) return null;
   if (patch.sceneTitle !== undefined) item.sceneTitle = String(patch.sceneTitle).trim();
@@ -135,27 +142,27 @@ function update(id, patch = {}) {
   if (patch.status !== undefined) item.status = normalizeStatus(patch.status);
   if (patch.cardDimension !== undefined) item.cardDimension = normalizeCard(patch.cardDimension);
   item.updatedAt = new Date().toISOString();
-  save(list);
+  save(list, framework);
   logger.info(`[failure-library] update id=${id}`);
   return item;
 }
 
 /** 删除案例 */
-function remove(id) {
-  const list = load();
+function remove(id, framework) {
+  const list = load(framework);
   const next = list.filter((c) => c.id !== id);
   if (next.length === list.length) return false;
-  save(next);
+  save(next, framework);
   logger.info(`[failure-library] remove id=${id}`);
   return true;
 }
 
 /** 清空全部案例，返回删除条数 */
-function clearAll() {
-  const list = load();
+function clearAll(framework) {
+  const list = load(framework);
   const count = list.length;
   if (count === 0) return 0;
-  save([]);
+  save([], framework);
   logger.info(`[failure-library] clear all -> ${count}`);
   return count;
 }
@@ -169,8 +176,8 @@ function clearAll() {
  * @param {object} scene 巡检场景 { id, title, clusterFields }
  * @returns {function|null} 匹配函数（命中返回 true，该记录应被剔除）；无非问题条目时返回 null
  */
-function buildNonProblemFilter(scene) {
-  const nonProblem = load().filter((c) => c.category === '非问题');
+function buildNonProblemFilter(scene, framework) {
+  const nonProblem = load(framework).filter((c) => c.category === '非问题');
   if (!nonProblem.length) return null;
   const { inCodeField, extCodeField } = resolveCodeFields(scene);
   const sceneId = scene && scene.id ? String(scene.id) : '';
@@ -195,10 +202,10 @@ function buildNonProblemFilter(scene) {
  * 已确认「非问题」的记录（buildNonProblemFilter 命中）不参与统计
  * @returns {number} 更新条数
  */
-function updateUserCounts(scene, records) {
+function updateUserCounts(scene, records, framework) {
   if (!scene || !Array.isArray(records)) return 0;
   const { inCodeField, extCodeField } = resolveCodeFields(scene);
-  const isNonProblem = buildNonProblemFilter(scene);
+  const isNonProblem = buildNonProblemFilter(scene, framework);
   const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
   const inUsers = new Map();    // inV -> Set(uid)
   const extUsers = new Map();   // exV -> Set(uid)
@@ -218,7 +225,7 @@ function updateUserCounts(scene, records) {
   }
 
   const emptySet = new Set();
-  const list = load();
+  const list = load(framework);
   let updated = 0;
   for (const c of list) {
     if (c.sceneId !== scene.id) continue;
@@ -237,8 +244,8 @@ function updateUserCounts(scene, records) {
     updated++;
   }
   if (updated > 0) {
-    save(list);
-    logger.info(`[failure-library] user counts updated scene=${scene.id} updated=${updated}`);
+    save(list, framework);
+    logger.info(`[failure-library] user counts updated scene=${scene.id} updated=${updated} framework=${framework || 'single'}`);
   }
   return updated;
 }
@@ -249,10 +256,10 @@ function updateUserCounts(scene, records) {
  * 供 export-json 写入聚类摘要（combos），用于一键导入时带出完整组合
  * @returns {Array<{ inCode: string, extCode: string, count: number }>}
  */
-function countCombos(scene, records) {
+function countCombos(scene, records, framework) {
   if (!scene || !Array.isArray(records)) return [];
   const { inCodeField, extCodeField } = resolveCodeFields(scene);
-  const isNonProblem = buildNonProblemFilter(scene);
+  const isNonProblem = buildNonProblemFilter(scene, framework);
   const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
   for (const r of records) {
     if (isNonProblem && isNonProblem(r)) continue; // 已确认非问题的记录剔除
@@ -284,9 +291,9 @@ function countCombos(scene, records) {
  * @param {Object} combosByScene 场景标题 -> 组合数组（countCombos 结果）
  * @returns {{ added: number, skipped: number }}
  */
-function importFromSummaries(summaries, scenes, combosByScene = {}) {
+function importFromSummaries(summaries, scenes, combosByScene = {}, framework) {
   const sceneMap = new Map((scenes || []).map((s) => [s.title, s]));
-  const list = load();
+  const list = load(framework);
   let added = 0;
   let skipped = 0;
   const exists = (sceneId, inCode, extCode) =>
@@ -370,8 +377,8 @@ function importFromSummaries(summaries, scenes, combosByScene = {}) {
       }
     }
   }
-  if (added > 0) save(list);
-  logger.info(`[failure-library] import added=${added} skipped=${skipped} scenes=${summaries.length}`);
+  if (added > 0) save(list, framework);
+  logger.info(`[failure-library] import added=${added} skipped=${skipped} scenes=${summaries.length} framework=${framework || 'single'}`);
   return { added, skipped };
 }
 
@@ -379,8 +386,8 @@ function importFromSummaries(summaries, scenes, combosByScene = {}) {
  * 生成喂给大模型的案例分析参考文本（空则返回 ''）
  * 仅取「已分析 / 已闭环」且有分析文本的条目（待确认的不作为 AI 判断依据），最多 20 条，每条分析截断 500 字符
  */
-function aiReferenceText() {
-  const list = load().filter(
+function aiReferenceText(framework) {
+  const list = load(framework).filter(
     (c) => (c.status === '已分析' || c.status === '已闭环') && c.analysis && String(c.analysis).trim()
   );
   if (!list.length) return '';
@@ -406,8 +413,8 @@ function csvEscape(v) {
 }
 
 /** 导出全部案例为 CSV 文本（含 UTF-8 BOM，Excel 可直接打开不乱码） */
-function exportCsv() {
-  const rows = load().map((c) => [
+function exportCsv(framework) {
+  const rows = load(framework).map((c) => [
     c.sceneTitle || '',
     c.inCode || '',
     c.extCode || '',
@@ -468,7 +475,7 @@ function parseCsv(text) {
  * 场景 ID 不在 CSV 中，导入时按标题从场景库解析 sceneId（保证后续命中数更新可用）
  * @returns {{ added: number, updated: number, skipped: number }}
  */
-function importCsv(text) {
+function importCsv(text, framework) {
   const rows = parseCsv(text);
   if (!rows.length) throw new Error('文件为空或格式不正确');
   const header = rows[0].map((h) => String(h).trim());
@@ -487,8 +494,8 @@ function importCsv(text) {
   if (iScene < 0) throw new Error('CSV 缺少「场景」列，请使用导出的 CSV 模板格式');
   if (iIn < 0 && iExt < 0) throw new Error('CSV 至少需要「内码」或「外码」列');
 
-  const sceneMap = new Map(sceneStore.listScenes().map((s) => [s.title, s]));
-  const list = load();
+  const sceneMap = new Map(sceneStore.listScenes(framework).map((s) => [s.title, s]));
+  const list = load(framework);
   let added = 0;
   let updated = 0;
   let skipped = 0;
@@ -549,8 +556,8 @@ function importCsv(text) {
       added++;
     }
   }
-  if (added + updated > 0) save(list);
-  logger.info(`[failure-library] import csv added=${added} updated=${updated} skipped=${skipped}`);
+  if (added + updated > 0) save(list, framework);
+  logger.info(`[failure-library] import csv added=${added} updated=${updated} skipped=${skipped} framework=${framework || 'single'}`);
   return { added, updated, skipped };
 }
 

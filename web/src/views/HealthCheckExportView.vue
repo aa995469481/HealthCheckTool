@@ -414,8 +414,11 @@
 
 <script setup>
 import { reactive, ref, computed, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
 import { ElMessage, ElNotification } from 'element-plus';
 import { Refresh, Search, Download, CopyDocument, Connection, VideoPlay, Setting, MagicStick, Cpu, Plus, Message } from '@element-plus/icons-vue';
+
+const route = useRoute();
 
 const credential = reactive({ configured: false, expired: false, expiredAt: '', source: '', updatedAt: '' });
 const debugModeEnabled = ref(false);
@@ -470,7 +473,10 @@ const scenarioGroups = computed(() => {
 });
 
 async function request(url, options = {}) {
-  const res = await fetch(url, {
+  // 统一携带当前框架标识（single/dual，来自路由），后端按框架隔离数据
+  const fw = route.meta.framework || 'single';
+  const sep = url.includes('?') ? '&' : '?';
+  const res = await fetch(`${url}${sep}framework=${fw}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options
   });
@@ -656,7 +662,7 @@ async function runInspection() {
     const res = await fetch('/api/health-check/export-json', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile: currentProfilePayload() })
+      body: JSON.stringify({ profile: currentProfilePayload(), framework: route.meta.framework || 'single' })
     });
     // 错误时后端返回 JSON；成功时为 xlsx 文件流
     const contentType = res.headers.get('Content-Type') || '';
