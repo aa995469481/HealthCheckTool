@@ -379,14 +379,7 @@ async function parseScene() {
     // 兜底默认值（老数据/解析器未返回时）
     if (sceneDraft.value.orderFieldName === undefined) sceneDraft.value.orderFieldName = '';
     if (sceneDraft.value.orderType === undefined) sceneDraft.value.orderType = '';
-    if (!Array.isArray(sceneDraft.value.clusterFields) || !sceneDraft.value.clusterFields.length) {
-      // 默认内码 + 外码（优先从关注字段匹配，找不到用默认名）
-      const focus = sceneDraft.value.focusFields || [];
-      sceneDraft.value.clusterFields = [
-        focus.find((f) => /InCode/i.test(f)) || 'walletEventInCode',
-        focus.find((f) => /ExtCode/i.test(f)) || 'walletEventExtCode'
-      ];
-    }
+    if (!Array.isArray(sceneDraft.value.clusterFields)) sceneDraft.value.clusterFields = [];
     if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
     if (!sceneDraft.value.clusterStatFields) sceneDraft.value.clusterStatFields = {};
     // 兼容旧版场景级统计列：迁移为所有维度的统计列
@@ -439,9 +432,7 @@ function editScene(row) {
   if (sceneDraft.value.orderFieldName === undefined) sceneDraft.value.orderFieldName = '';
   if (sceneDraft.value.orderType === undefined) sceneDraft.value.orderType = '';
   if (!Array.isArray(sceneDraft.value.focusFields)) sceneDraft.value.focusFields = [];
-  if (!Array.isArray(sceneDraft.value.clusterFields) || !sceneDraft.value.clusterFields.length) {
-    sceneDraft.value.clusterFields = ['walletEventInCode', 'walletEventExtCode'];
-  }
+  if (!Array.isArray(sceneDraft.value.clusterFields)) sceneDraft.value.clusterFields = [];
   if (!sceneDraft.value.clusterSubFields) sceneDraft.value.clusterSubFields = {};
   if (!sceneDraft.value.clusterStatFields) sceneDraft.value.clusterStatFields = {};
   // 兼容旧版场景级统计列：迁移为所有维度的统计列

@@ -2,7 +2,7 @@
  * 聚类摘要 - 将巡检原始记录按「用户勾选的多个聚类字段」分别独立分组，生成精简的结构化摘要
  *
  * 设计约定（与用户确认）：
- *   - 聚类字段 clusterFields 由用户在场景管理中多选（默认内码 + 外码）
+ *   - 聚类字段 clusterFields 由用户在场景管理中多选（不再默认内码/外码，未配置则不按维度聚类）
  *   - 每个字段都是独立的 1 级分析维度，各自按字段取值分组统计（并列展示，互不级联）
  *   - 字段排列顺序仅决定展示顺序，无层级含义
  *   - 每个维度统计：分组条数/占比、版本分布（_app_ver）
@@ -119,11 +119,10 @@ function pickSamples(records, focusFields, versionField) {
  */
 function buildClusterSummary(scene, records, framework) {
   const { focusFields, versionField } = resolveFields(scene);
-  // 聚类字段：场景配置优先；缺失时默认内码 + 外码
-  let clusterFields = Array.isArray(scene && scene.clusterFields) && scene.clusterFields.length
-    ? scene.clusterFields.map(String)
-    : ['walletEventInCode', 'walletEventExtCode'];
-  clusterFields = clusterFields.filter((f) => String(f).trim() !== '');
+  // 聚类字段：由场景配置决定；未配置则为空数组（不按维度聚类，仅统计总数）
+  const clusterFields = Array.isArray(scene && scene.clusterFields)
+    ? scene.clusterFields.map(String).filter((f) => String(f).trim() !== '')
+    : [];
   // 统计展示列：场景管理按「一级维度」独立配置（clusterStatFields[一级字段]），来源为关注字段；
   // 未配置的维度不展示统计列；兼容旧版场景级 statFields 作为兜底
   const statFieldsFor = (field) => {
