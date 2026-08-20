@@ -342,9 +342,16 @@ router.post('/export-json', async (req, res) => {
 router.post('/debug/request-body', (req, res) => {
   const { profile } = req.body || {};
   try {
+    // 请求体 name/cluster 取计划勾选场景中第一个场景的表名/集群（与执行链路保持一致）
+    const fw = fwOf(req);
+    const scenes = sceneStore.listScenes(fw);
+    const sceneMap = new Map(scenes.map((s) => [s.id, s]));
+    const firstScene = (Array.isArray(profile && profile.enabled_scenarios) ? profile.enabled_scenarios : [])
+      .map((id) => sceneMap.get(id))
+      .find(Boolean);
     const requestBody = clickhouse.buildRequestBody({
-      name: (profile && profile.table) || 'wallet_client_hmos',
-      cluster: (profile && profile.cluster) || 'ulan1-aiops-ch-az1-4',
+      name: (firstScene && firstScene.table) || 'wallet_client_hmos',
+      cluster: (firstScene && firstScene.cluster) || 'ulan1-aiops-ch-az1-4',
       beginTimestamp: profile && profile.beginTimestamp,
       endTimestamp: profile && profile.endTimestamp,
       pageNo: 1,
@@ -363,9 +370,16 @@ router.post('/debug/run-query', async (req, res) => {
   const { profile } = req.body || {};
   logger.info(`[debug/run-query] start range=${(profile && profile.beginTimestamp) || '-'} ~ ${(profile && profile.endTimestamp) || '-'}`);
   try {
+    // 请求体 name/cluster 取计划勾选场景中第一个场景的表名/集群（与执行链路保持一致）
+    const fw = fwOf(req);
+    const scenes = sceneStore.listScenes(fw);
+    const sceneMap = new Map(scenes.map((s) => [s.id, s]));
+    const firstScene = (Array.isArray(profile && profile.enabled_scenarios) ? profile.enabled_scenarios : [])
+      .map((id) => sceneMap.get(id))
+      .find(Boolean);
     const q = await clickhouse.queryWithTotal({
-      name: 'wallet_client_hmos',
-      cluster: 'ulan1-aiops-ch-az1-4',
+      name: (firstScene && firstScene.table) || 'wallet_client_hmos',
+      cluster: (firstScene && firstScene.cluster) || 'ulan1-aiops-ch-az1-4',
       beginTimestamp: profile && profile.beginTimestamp,
       endTimestamp: profile && profile.endTimestamp,
       app_ver: profile && profile.app_ver

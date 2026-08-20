@@ -760,7 +760,8 @@ async function runDebugQuery() {
         profile: {
           app_ver: plan.app_ver,
           beginTimestamp: dateRange.value ? dateRange.value[0] : '',
-          endTimestamp: dateRange.value ? dateRange.value[1] : ''
+          endTimestamp: dateRange.value ? dateRange.value[1] : '',
+          enabled_scenarios: plan.enabled_scenarios
         }
       })
     });
