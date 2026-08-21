@@ -23,8 +23,8 @@ const debugMode = require('./debug-mode');
 const QUERY_URL =
   'https://console-drcn.wisedevops.huawei.com/edge/WiseEyeAIOpsService/aiops/gateway/api/logretrieval/api/clickhouse/queryWithTotal/';
 
-/** 单页大小与最大翻页数（3 万+ 条数据场景需更大单页与更多页） */
-const PAGE_SIZE = 1000;
+/** 单页大小与最大翻页数（平台硬性限制 pageSize<=500；MAX_PAGES=100 支持最多 5 万条） */
+const PAGE_SIZE = 500;
 const MAX_PAGES = 100;
 /** 分页间隔：每页查询完成后等待，降低对查询服务的负载 */
 const PAGE_INTERVAL_MS = 500;
