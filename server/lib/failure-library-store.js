@@ -358,14 +358,26 @@ function importFromSummaries(summaries, scenes, combosByScene = {}, framework) {
       // 组合导入：对内码 Top 分组（无内码维度则按外码 Top 分组），
       // 把该码值下的所有组合（combos 已按命中数降序）都导入，内码+外码同时带出
       const codeGroups = (inDim && inDim.groups) || (exDim && exDim.groups) || [];
-      for (const g of codeGroups) {
-        const codeValue = String(g.key === '(空)' ? '' : g.key);
-        if (!codeValue) continue;
-        const codeMatches = inDim
-          ? combos.filter((c) => c.inCode === codeValue)
-          : combos.filter((c) => c.extCode === codeValue);
-        if (!codeMatches.length) continue;
-        for (const combo of codeMatches.slice(0, MAX_COMBOS_PER_CODE)) {
+      if (codeGroups.length) {
+        for (const g of codeGroups) {
+          const codeValue = String(g.key === '(空)' ? '' : g.key);
+          if (!codeValue) continue;
+          const codeMatches = inDim
+            ? combos.filter((c) => c.inCode === codeValue)
+            : combos.filter((c) => c.extCode === codeValue);
+          if (!codeMatches.length) continue;
+          for (const combo of codeMatches.slice(0, MAX_COMBOS_PER_CODE)) {
+            if (exists(sceneId, combo.inCode, combo.extCode)) {
+              skipped++;
+              continue;
+            }
+            pushEntry(sceneId, sceneTitle, combo.inCode, combo.extCode, combo.count);
+          }
+        }
+      } else {
+        // 场景未配置聚类维度（clusterFields 为空，摘要无内码/外码维度分组）：
+        // 直接按组合导入（combos 已按命中数降序），限制条数防条目膨胀
+        for (const combo of combos.slice(0, MAX_COMBOS_PER_CODE * 5)) {
           if (exists(sceneId, combo.inCode, combo.extCode)) {
             skipped++;
             continue;
