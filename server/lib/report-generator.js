@@ -39,9 +39,10 @@ function analysisFileFor(framework) {
 const MAX_SAMPLES_PER_SCENE = 5; // 每场景最多保留样本条数
 const MAX_SAMPLES_PER_GROUP = 2; // 每分组（错误码）最多保留样本条数
 const MAX_SAMPLE_FIELD_LEN = 200; // 单个样本字段值最大长度
-// 样本只保留这些业务关键字段，控制输入体积
+// 样本只保留这些业务关键字段，控制输入体积（含双框架日志空间的内码/外码字段 event_id / internal_errcode）
 const SAMPLE_FIELDS = [
   'walletEventInCode', 'walletEventExtCode', 'walletEventID', 'walletEventDesc',
+  'event_id', 'internal_errcode',
   'issueName', 'issueDesc', 'errorCode', 'errorMsg', 'message',
   '_app_ver', 'appVersion', 'happenedTime', 'userProvince', 'userCity'
 ];

@@ -23,6 +23,20 @@ function fileFor(framework) {
   return framework === 'dual' ? FILE_DUAL : FILE;
 }
 
+/* ---------- 框架字段映射：内码/外码字段名（不同日志空间字段差异大） ----------
+ * 单框架：内码 walletEventInCode / 外码 walletEventExtCode
+ * 双框架：内码 event_id / 外码 internal_errcode
+ */
+const CODE_FIELDS = {
+  single: { inCode: 'walletEventInCode', extCode: 'walletEventExtCode', inCodeRe: /incode/i, extCodeRe: /extcode/i },
+  dual: { inCode: 'event_id', extCode: 'internal_errcode', inCodeRe: /event_?id/i, extCodeRe: /internal_?errcode/i }
+};
+
+/** 按框架取内码/外码字段名识别器（非 dual 一律按单框架处理，不影响现有行为） */
+function codeFieldTest(framework) {
+  return framework === 'dual' ? CODE_FIELDS.dual : CODE_FIELDS.single;
+}
+
 /* ---------- 字段枚举与归一化（新增维护字段） ---------- */
 const CATEGORY_ENUM = ['端侧问题', 'SP问题', '云侧问题', '非问题', '待确认'];
 const STATUS_ENUM = ['待确认', '已分析', '已闭环'];
@@ -71,16 +85,17 @@ function save(list, framework) {
   fs.writeFileSync(fileFor(framework), JSON.stringify(list, null, 2), 'utf-8');
 }
 
-/** 从场景的聚类字段里解析内码/外码字段名（默认 walletEventInCode / walletEventExtCode） */
-function resolveCodeFields(scene) {
+/** 从场景的聚类字段里解析内码/外码字段名（单框架默认 walletEventInCode / walletEventExtCode，双框架默认 event_id / internal_errcode） */
+function resolveCodeFields(scene, framework) {
+  const map = codeFieldTest(framework);
   const clusterFields = Array.isArray(scene && scene.clusterFields)
     ? scene.clusterFields.map(String)
-    : ['walletEventInCode', 'walletEventExtCode'];
-  let inCodeField = 'walletEventInCode';
-  let extCodeField = 'walletEventExtCode';
+    : [map.inCode, map.extCode];
+  let inCodeField = map.inCode;
+  let extCodeField = map.extCode;
   for (const f of clusterFields) {
-    if (/incode/i.test(f)) inCodeField = f;
-    else if (/extcode/i.test(f)) extCodeField = f;
+    if (map.inCodeRe.test(f)) inCodeField = f;
+    else if (map.extCodeRe.test(f)) extCodeField = f;
   }
   return { inCodeField, extCodeField };
 }
@@ -179,7 +194,7 @@ function clearAll(framework) {
 function buildNonProblemFilter(scene, framework) {
   const nonProblem = load(framework).filter((c) => c.category === '非问题');
   if (!nonProblem.length) return null;
-  const { inCodeField, extCodeField } = resolveCodeFields(scene);
+  const { inCodeField, extCodeField } = resolveCodeFields(scene, framework);
   const sceneId = scene && scene.id ? String(scene.id) : '';
   const sceneTitle = scene && scene.title ? String(scene.title) : '';
   return (record) => {
@@ -204,7 +219,7 @@ function buildNonProblemFilter(scene, framework) {
  */
 function updateUserCounts(scene, records, framework) {
   if (!scene || !Array.isArray(records)) return 0;
-  const { inCodeField, extCodeField } = resolveCodeFields(scene);
+  const { inCodeField, extCodeField } = resolveCodeFields(scene, framework);
   const isNonProblem = buildNonProblemFilter(scene, framework);
   const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
   const inUsers = new Map();    // inV -> Set(uid)
@@ -258,7 +273,7 @@ function updateUserCounts(scene, records, framework) {
  */
 function countCombos(scene, records, framework) {
   if (!scene || !Array.isArray(records)) return [];
-  const { inCodeField, extCodeField } = resolveCodeFields(scene);
+  const { inCodeField, extCodeField } = resolveCodeFields(scene, framework);
   const isNonProblem = buildNonProblemFilter(scene, framework);
   const comboUsers = new Map(); // `${inV}\u0000${exV}` -> Set(uid)
   for (const r of records) {
@@ -334,8 +349,9 @@ function importFromSummaries(summaries, scenes, combosByScene = {}, framework) {
     const scene = sceneMap.get(sceneTitle);
     const sceneId = scene ? scene.id : '';
     const dims = summary.dimensions || [];
-    const inDim = dims.find((d) => /incode/i.test(d.field));
-    const exDim = dims.find((d) => /extcode/i.test(d.field));
+    const { inCodeRe, extCodeRe } = codeFieldTest(framework);
+    const inDim = dims.find((d) => inCodeRe.test(d.field));
+    const exDim = dims.find((d) => extCodeRe.test(d.field));
     const combos = Array.isArray(combosByScene[sceneTitle]) ? combosByScene[sceneTitle] : [];
 
     if (combos.length) {
@@ -362,8 +378,8 @@ function importFromSummaries(summaries, scenes, combosByScene = {}, framework) {
 
     // 回退：combos 缺失（旧摘要）时按维度值导入
     for (const dim of dims) {
-      const isInCode = /incode/i.test(dim.field);
-      const isExtCode = /extcode/i.test(dim.field);
+      const isInCode = inCodeRe.test(dim.field);
+      const isExtCode = extCodeRe.test(dim.field);
       if (!isInCode && !isExtCode) continue;
       for (const g of (dim.groups || [])) {
         const inCode = isInCode ? String(g.key === '(空)' ? '' : g.key) : '';
