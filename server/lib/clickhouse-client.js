@@ -26,6 +26,13 @@ const QUERY_URL =
 /** 单页大小与最大翻页数 */
 const PAGE_SIZE = 500;
 const MAX_PAGES = 50;
+/** 分页间隔：每页查询完成后等待，降低对查询服务的负载 */
+const PAGE_INTERVAL_MS = 1000;
+
+/** 等待工具 */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** 试点场景使用的过滤条件（对齐用户提供的真实请求体） */
 const PILOT_FILTER_CONDITION = {
@@ -304,6 +311,8 @@ async function queryWithTotal(params = {}) {
     logger.info(`[clickhouse] page=${pageNo} got=${page.records.length} accumulated=${allRecords.length} total=${total}`);
     // 已取完或该页为空
     if (allRecords.length >= total || page.records.length === 0) break;
+    // 分页间隔 1s，避免连续翻页对查询服务产生较大负载
+    await sleep(PAGE_INTERVAL_MS);
   }
 
   return { total, records: allRecords, histogram, pages, beginTimestamp, endTimestamp, rawBodies };

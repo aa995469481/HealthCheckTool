@@ -34,6 +34,14 @@ const inspectionHistory = require('../lib/inspection-history');
 
 const router = express.Router();
 
+/** 场景间隔：每个场景查询完成后等待，降低对查询服务的负载 */
+const SCENE_INTERVAL_MS = 2000;
+
+/** 等待工具 */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** 从请求中解析框架标识（single | dual，默认 single，非法值回退 single） */
 function fwOf(req) {
   const fw = (req.body && req.body.framework) || (req.query && req.query.framework) || 'single';
@@ -236,7 +244,8 @@ router.post('/export-json', async (req, res) => {
     const scenes = sceneStore.listScenes(fw);
     const sceneMap = new Map(scenes.map((s) => [s.id, s]));
     const queryResults = new Map();
-    for (const id of profile.enabled_scenarios) {
+    for (let i = 0; i < profile.enabled_scenarios.length; i++) {
+      const id = profile.enabled_scenarios[i];
       const scene = sceneMap.get(id);
       if (!scene) {
         logger.warn(`[export] scenario not found: ${id}`);
@@ -262,6 +271,8 @@ router.post('/export-json', async (req, res) => {
       // 自动更新失败场景库用户数量（该场景下内码+外码组合本次巡检命中的去重用户数，按 uid 去重）
       const hitUpdated = failureLibrary.updateUserCounts(scene, q.records, fw);
       if (hitUpdated > 0) logger.info(`[export] failure-library users updated=${hitUpdated} scenario=${id}`);
+      // 场景间隔 2s，避免连续查询对查询服务产生较大负载（最后一个场景后不再等待）
+      if (i < profile.enabled_scenarios.length - 1) await sleep(SCENE_INTERVAL_MS);
     }
 
     if (queryResults.size === 0) {
