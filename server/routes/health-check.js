@@ -288,6 +288,28 @@ router.post('/export-json', async (req, res) => {
       excelScenarios.push({ scene, records: q.records });
     }
 
+    // 场景级结果元数据（供前端识别数据不完整 + 单点重试入口）
+    const sceneResults = excelScenarios.map(({ scene, records }) => {
+      const q = queryResults.get(scene.id);
+      return {
+        sceneId: scene.id,
+        sceneTitle: scene.title,
+        table: scene.table,
+        total: q ? q.total : records.length,
+        fetched: records.length,
+        pages: q ? q.pages : 0,
+        failedPages: (q && q.failedPages) || [],
+        complete: !(q && q.failedPages && q.failedPages.length)
+      };
+    });
+    const incompleteScenes = sceneResults.filter((r) => !r.complete);
+    if (incompleteScenes.length) {
+      logger.warn(
+        `[export] ${incompleteScenes.length} 个场景数据不完整：` +
+          incompleteScenes.map((r) => `${r.sceneTitle}(失败页 ${r.failedPages.map((p) => p.pageNo).join('、')})`).join('; ')
+      );
+    }
+
     // 生成聚类摘要（供大模型分析），持久化到 data/analysis/（单框架）或 data/analysis-dual/（双框架）
     const analysisDir = path.join(__dirname, '..', 'data', fw === 'dual' ? 'analysis-dual' : 'analysis');
     if (!fs.existsSync(analysisDir)) fs.mkdirSync(analysisDir, { recursive: true });
@@ -309,7 +331,8 @@ router.post('/export-json', async (req, res) => {
       endTimestamp: profile.endTimestamp || '',
       summaries,
       markdownTexts,
-      combosByScene
+      combosByScene,
+      sceneResults
     };
     fs.writeFileSync(analysisFile, JSON.stringify(analysisData, null, 2), 'utf-8');
     // 固定名 latest.json，供页面展示读取
@@ -346,6 +369,94 @@ router.post('/export-json', async (req, res) => {
   } catch (e) {
     logger.error('[export] failed', e);
     res.json({ code: 1, msg: '巡检执行失败：' + (e.message || '未知错误') });
+  }
+});
+
+/* ---------- 4.2 单点故障重试：针对数据不完整的场景重新完整查询，并覆盖最新摘要 ---------- */
+router.post('/retry-scenario', async (req, res) => {
+  const { sceneId, beginTimestamp, endTimestamp, app_ver } = req.body || {};
+  try {
+    if (!sceneId) return res.json({ code: 1, msg: '缺少场景 ID' });
+    const fw = fwOf(req);
+    const scene = sceneStore.getScene(sceneId, fw);
+    if (!scene) return res.json({ code: 1, msg: '场景不存在' });
+
+    logger.info(`[retry-scenario] start scene=${scene.title} table=${scene.table} fw=${fw}`);
+    const q = await clickhouse.queryWithTotal({
+      name: scene.table,
+      cluster: scene.cluster,
+      beginTimestamp,
+      endTimestamp,
+      app_ver,
+      filterCondition: scene.filterCondition,
+      queryString: scene.queryString,
+      granularity: scene.granularity,
+      dataSourceServiceId: scene.dataSourceServiceId,
+      orderFieldName: scene.orderFieldName,
+      orderType: scene.orderType
+    });
+
+    if (q.failedPages && q.failedPages.length) {
+      return res.json({
+        code: 1,
+        msg: `重查后仍不完整：第 ${q.failedPages.map((p) => p.pageNo).join('、')} 页查询失败（已拉取 ${q.records.length} 条）`
+      });
+    }
+
+    // 重新生成该场景的聚类摘要，覆盖 latest.json 对应条目
+    const analysisDir = path.join(__dirname, '..', 'data', fw === 'dual' ? 'analysis-dual' : 'analysis');
+    const latestFile = path.join(analysisDir, 'latest.json');
+    if (!fs.existsSync(latestFile)) return res.json({ code: 1, msg: '未找到聚类摘要文件，请先执行巡检' });
+    const analysisData = JSON.parse(fs.readFileSync(latestFile, 'utf-8'));
+
+    const summary = clusterSummary.buildClusterSummary(scene, q.records, fw);
+    const markdown = clusterSummary.toMarkdown(summary);
+    const combos = failureLibrary.countCombos(scene, q.records, fw);
+
+    const sIdx = (analysisData.summaries || []).findIndex((s) => s.scenarioTitle === scene.title);
+    if (sIdx >= 0) {
+      analysisData.summaries[sIdx] = summary;
+      analysisData.markdownTexts[sIdx] = markdown;
+    } else {
+      analysisData.summaries = analysisData.summaries || [];
+      analysisData.markdownTexts = analysisData.markdownTexts || [];
+      analysisData.summaries.push(summary);
+      analysisData.markdownTexts.push(markdown);
+    }
+    analysisData.combosByScene = analysisData.combosByScene || {};
+    analysisData.combosByScene[scene.title] = combos;
+
+    // 更新场景级结果元数据（标记为完整）
+    analysisData.sceneResults = analysisData.sceneResults || [];
+    const rIdx = analysisData.sceneResults.findIndex((r) => r.sceneId === scene.id);
+    const newResult = {
+      sceneId: scene.id,
+      sceneTitle: scene.title,
+      table: scene.table,
+      total: q.total,
+      fetched: q.records.length,
+      pages: q.pages,
+      failedPages: [],
+      complete: true
+    };
+    if (rIdx >= 0) analysisData.sceneResults[rIdx] = newResult;
+    else analysisData.sceneResults.push(newResult);
+
+    fs.writeFileSync(latestFile, JSON.stringify(analysisData, null, 2), 'utf-8');
+
+    // 更新失败场景库用户数（该场景本次巡检命中的去重用户数）
+    const hitUpdated = failureLibrary.updateUserCounts(scene, q.records, fw);
+    if (hitUpdated > 0) logger.info(`[retry-scenario] failure-library users updated=${hitUpdated} scene=${scene.id}`);
+
+    logger.info(`[retry-scenario] done scene=${scene.title} fetched=${q.records.length} pages=${q.pages}`);
+    res.json({
+      code: 0,
+      msg: 'ok',
+      data: { sceneTitle: scene.title, total: q.total, fetched: q.records.length, pages: q.pages }
+    });
+  } catch (e) {
+    logger.error('[retry-scenario] failed', e);
+    res.json({ code: 1, msg: '重试失败：' + (e.message || '未知错误') });
   }
 });
 

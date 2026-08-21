@@ -123,6 +123,20 @@
         </div>
       </template>
 
+      <!-- 数据不完整场景警告 + 单点重试入口 -->
+      <div v-for="s in incompleteScenes" :key="s.sceneId" style="margin-bottom: 12px">
+        <el-alert type="warning" show-icon :closable="false">
+          <template #title>
+            场景「{{ s.sceneTitle }}」数据不完整：第 {{ (s.failedPages || []).map(p => p.pageNo).join('、') }} 页查询失败，已停止翻页（已拉取 {{ s.fetched }} / {{ s.total }} 条）
+          </template>
+          <template #default>
+            <el-button size="small" type="warning" :loading="retryingSceneId === s.sceneId" @click="retryScene(s)">
+              重试该场景
+            </el-button>
+          </template>
+        </el-alert>
+      </div>
+
       <!-- 每个场景默认折叠，由用户按需展开查看维度 -->
       <el-collapse v-model="expandedScenes" class="cluster-collapse">
         <el-collapse-item v-for="s in analysis.summaries" :key="s.scenarioTitle" :name="s.scenarioTitle">
@@ -456,6 +470,7 @@ const exportingEmail = ref(false);
 const emailForm = reactive({ from: '', to: '', cc: '', subject: '' });
 /* 聚类摘要：展开的场景名列表，默认全部折叠 */
 const expandedScenes = ref([]);
+const retryingSceneId = ref(null);
 
 const plan = reactive({
   name: '',
@@ -711,6 +726,33 @@ async function loadAnalysis() {
     analysis.value = data;
   } catch (e) {
     analysis.value = null;
+  }
+}
+
+/** 数据不完整的场景（latest.json 的 sceneResults 中存在失败页） */
+const incompleteScenes = computed(() =>
+  ((analysis.value && analysis.value.sceneResults) || []).filter((r) => r.failedPages && r.failedPages.length)
+);
+
+/** 单点故障重试：重新完整查询该场景并刷新最新摘要 */
+async function retryScene(s) {
+  retryingSceneId.value = s.sceneId;
+  try {
+    const data = await request('/api/health-check/retry-scenario', {
+      method: 'POST',
+      body: JSON.stringify({
+        sceneId: s.sceneId,
+        beginTimestamp: analysis.value.beginTimestamp,
+        endTimestamp: analysis.value.endTimestamp,
+        app_ver: analysis.value.appVer
+      })
+    });
+    ElMessage.success(`场景「${data.sceneTitle}」重试成功，共 ${data.fetched} 条`);
+    loadAnalysis();
+  } catch (e) {
+    ElMessage.error(e.message || '重试失败');
+  } finally {
+    retryingSceneId.value = null;
   }
 }
 

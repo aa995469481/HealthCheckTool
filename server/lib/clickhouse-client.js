@@ -23,11 +23,13 @@ const debugMode = require('./debug-mode');
 const QUERY_URL =
   'https://console-drcn.wisedevops.huawei.com/edge/WiseEyeAIOpsService/aiops/gateway/api/logretrieval/api/clickhouse/queryWithTotal/';
 
-/** 单页大小与最大翻页数 */
-const PAGE_SIZE = 500;
-const MAX_PAGES = 50;
+/** 单页大小与最大翻页数（3 万+ 条数据场景需更大单页与更多页） */
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 100;
 /** 分页间隔：每页查询完成后等待，降低对查询服务的负载 */
-const PAGE_INTERVAL_MS = 1000;
+const PAGE_INTERVAL_MS = 500;
+/** 单页 HTTP 500 最大重试次数 */
+const RETRY_MAX = 3;
 
 /** 等待工具 */
 function sleep(ms) {
@@ -234,9 +236,11 @@ async function queryOnce(requestBody) {
 
   let res = await curlJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
 
-  // 服务端 500（如平台 SQL 生成偶发故障）自动重试 1 次，降低偶发故障导致的巡检中断
-  if (res.status === 500) {
-    logger.warn(`[clickhouse] HTTP 500 (page=${requestBody.pageNo}) bodyLen=${String(res.body).length}，自动重试 1 次`);
+  // 服务端 500（如平台 SQL 生成偶发故障）自动重试，最多 RETRY_MAX 次，降低偶发故障导致的巡检中断
+  let attempt = 0;
+  while (res.status === 500 && attempt < RETRY_MAX) {
+    attempt++;
+    logger.warn(`[clickhouse] HTTP 500 (page=${requestBody.pageNo}) bodyLen=${String(res.body).length}，自动重试第 ${attempt} 次`);
     res = await curlJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
     logger.info(`[clickhouse] retry done status=${res.status} page=${requestBody.pageNo} bodyLen=${String(res.body).length}`);
   }
@@ -290,6 +294,7 @@ async function queryWithTotal(params = {}) {
   let total = 0;
   let pages = 0;
   let rawBodies = [];
+  const failedPages = [];
 
   for (let pageNo = 1; pageNo <= MAX_PAGES; pageNo++) {
     const requestBody = buildRequestBody({
@@ -308,7 +313,15 @@ async function queryWithTotal(params = {}) {
       orderType: params.orderType
     });
 
-    const page = await queryOnce(requestBody);
+    let page;
+    try {
+      page = await queryOnce(requestBody);
+    } catch (e) {
+      // 单页多次重试后仍失败：记录失败页并停止翻页，返回不完整数据（由上层提示用户并提供单点重试）
+      failedPages.push({ pageNo, message: String((e && e.message) || e).slice(0, 300) });
+      logger.error(`[clickhouse] page=${pageNo} 重试后仍失败，停止翻页（已拉取 ${allRecords.length} 条）：${(e && e.message) || e}`);
+      break;
+    }
     pages++;
     allRecords.push(...page.records);
     total = page.total;
@@ -318,11 +331,21 @@ async function queryWithTotal(params = {}) {
     logger.info(`[clickhouse] page=${pageNo} got=${page.records.length} accumulated=${allRecords.length} total=${total}`);
     // 已取完或该页为空
     if (allRecords.length >= total || page.records.length === 0) break;
-    // 分页间隔 1s，避免连续翻页对查询服务产生较大负载
+    // 分页间隔，避免连续翻页对查询服务产生较大负载
     await sleep(PAGE_INTERVAL_MS);
   }
 
-  return { total, records: allRecords, histogram, pages, beginTimestamp, endTimestamp, rawBodies };
+  return {
+    total,
+    records: allRecords,
+    histogram,
+    pages,
+    beginTimestamp,
+    endTimestamp,
+    rawBodies,
+    failedPages,
+    incomplete: failedPages.length > 0
+  };
 }
 
 module.exports = {
