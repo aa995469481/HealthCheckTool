@@ -232,7 +232,14 @@ async function queryOnce(requestBody) {
     );
   }
 
-  const res = await curlJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
+  let res = await curlJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
+
+  // 服务端 500（如平台 SQL 生成偶发故障）自动重试 1 次，降低偶发故障导致的巡检中断
+  if (res.status === 500) {
+    logger.warn(`[clickhouse] HTTP 500 (page=${requestBody.pageNo}) bodyLen=${String(res.body).length}，自动重试 1 次`);
+    res = await curlJsonPost(QUERY_URL, headers, requestBody, config.queryTimeoutMs);
+    logger.info(`[clickhouse] retry done status=${res.status} page=${requestBody.pageNo} bodyLen=${String(res.body).length}`);
+  }
 
   if (debugMode.getDebugEnabled()) {
     logger.info(`[clickhouse] === RESPONSE status=${res.status} (page=${requestBody.pageNo}) ===`);
