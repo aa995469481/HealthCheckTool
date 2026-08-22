@@ -43,6 +43,18 @@
           </el-form>
         </el-collapse-item>
       </el-collapse>
+
+      <!-- Keep Alive 存活探测：后台定时探测，保持 Wise token 有效 -->
+      <div class="keepalive-row">
+        <span class="keepalive-label">Keep Alive 存活探测</span>
+        <el-switch v-model="keepalive.enabled" @change="toggleKeepalive" />
+        <span class="keepalive-hint">每 {{ keepalive.intervalMinutes || 20 }} 分钟后台探测一次，保持 Wise token 有效</span>
+        <el-tag v-if="keepalive.lastResult" size="small" :type="keepaliveTagType">{{ keepaliveResultText }}</el-tag>
+        <el-button size="small" :loading="probing" @click="probeNow">立即探测</el-button>
+        <div v-if="keepalive.lastRunAt" class="keepalive-last">
+          上次探测：{{ keepalive.lastRunAt }}<span v-if="keepalive.lastMessage">（{{ keepalive.lastMessage }}）</span>
+        </div>
+      </div>
     </el-card>
 
     <!-- 巡检计划卡片 -->
@@ -512,6 +524,58 @@ async function loadCredentials() {
     ElMessage.error(e.message || '加载凭据状态失败');
   }
 }
+
+/* ---------- Keep Alive 存活探测 ---------- */
+const keepalive = ref({ enabled: false, intervalMinutes: 20, lastRunAt: '', lastResult: '', lastMessage: '' });
+const probing = ref(false);
+
+async function loadKeepalive() {
+  try {
+    keepalive.value = await request('/api/health-check/keepalive');
+  } catch (e) {
+    // 忽略加载失败，保持默认值
+  }
+}
+
+async function toggleKeepalive(val) {
+  try {
+    const data = await request('/api/health-check/keepalive', {
+      method: 'POST',
+      body: JSON.stringify({ enabled: val })
+    });
+    keepalive.value = { ...keepalive.value, ...data };
+    if (data.probe && data.probe.result !== 'skipped') {
+      if (data.probe.result === 'ok') ElMessage.success('探测成功，token 有效');
+      else ElMessage.warning(data.probe.message || '探测异常，请检查凭据');
+    }
+  } catch (e) {
+    keepalive.value.enabled = !val;
+    ElMessage.error(e.message || '设置失败');
+  }
+}
+
+async function probeNow() {
+  probing.value = true;
+  try {
+    const data = await request('/api/health-check/keepalive/probe', { method: 'POST', body: '{}' });
+    if (data.result === 'ok') ElMessage.success('探测成功，token 有效');
+    else ElMessage.warning(data.message || '探测异常');
+    loadKeepalive();
+  } catch (e) {
+    ElMessage.error(e.message || '探测失败');
+  } finally {
+    probing.value = false;
+  }
+}
+
+const keepaliveTagType = computed(() => {
+  const map = { ok: 'success', unauthorized: 'danger', error: 'warning', skipped: 'info' };
+  return map[keepalive.value.lastResult] || 'info';
+});
+const keepaliveResultText = computed(() => {
+  const map = { ok: '正常', unauthorized: 'token 失效', error: '异常', skipped: '未执行' };
+  return map[keepalive.value.lastResult] || '';
+});
 
 async function loadDebugMode() {
   try {
@@ -1090,6 +1154,7 @@ async function exportEml() {
 
 onMounted(() => {
   loadCredentials();
+  loadKeepalive();
   loadScenarios();
   loadProfiles();
   loadDebugMode();
@@ -1151,6 +1216,27 @@ onMounted(() => {
 .credential-collapse {
   margin-top: 12px;
   max-width: 720px;
+}
+.keepalive-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.keepalive-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.keepalive-hint {
+  font-size: 12px;
+  color: #909399;
+}
+.keepalive-last {
+  width: 100%;
+  font-size: 12px;
+  color: #909399;
 }
 .debug-hint {
   font-size: 12px;

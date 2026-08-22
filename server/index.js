@@ -7,6 +7,7 @@
 const express = require('express');
 const { logger, requestLogger } = require('./lib/logger');
 const healthCheckRoutes = require('./routes/health-check');
+const keepalive = require('./lib/keepalive');
 
 const app = express();
 const PORT = 3000;
@@ -25,6 +26,8 @@ const server = app.listen(PORT, () => {
   console.log(`  接口地址: http://localhost:${PORT}/api/health-check`);
   console.log(`  日志文件: ${logger.currentLogFile()}`);
   console.log('============================================');
+  // 启动后台 Keep Alive 存活探测（按配置开关决定是否执行）
+  keepalive.start();
 });
 
 // 手动登录（可达数分钟）与 ClickHouse 查询均需较长超时

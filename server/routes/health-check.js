@@ -31,6 +31,8 @@ const emlExport = require('../lib/eml-export');
 const emailConfigStore = require('../lib/email-config-store');
 const failureLibrary = require('../lib/failure-library-store');
 const inspectionHistory = require('../lib/inspection-history');
+const keepalive = require('../lib/keepalive');
+const keepaliveConfig = require('../lib/keepalive-config-store');
 
 const router = express.Router();
 
@@ -95,6 +97,39 @@ router.get('/credentials', (req, res) => {
   const status = secretsStore.getStatus();
   logger.info(`[credentials] status -> configured=${status.configured} source=${status.source}`);
   res.json({ code: 0, msg: 'ok', data: status });
+});
+
+/* ---------- 1.2 Keep Alive 存活探测（保持 Wise token 有效） ---------- */
+router.get('/keepalive', (req, res) => {
+  const status = keepaliveConfig.getStatus();
+  logger.info(`[keepalive] get status -> enabled=${status.enabled} interval=${status.intervalMinutes}min last=${status.lastResult}`);
+  res.json({ code: 0, msg: 'ok', data: status });
+});
+
+router.post('/keepalive', async (req, res) => {
+  try {
+    const { enabled } = req.body || {};
+    const status = keepaliveConfig.saveConfig({ enabled: enabled === true });
+    logger.info(`[keepalive] set enabled=${enabled === true}`);
+    // 打开开关时立即探测一次，让用户即时看到结果
+    let probe = null;
+    if (enabled === true) probe = await keepalive.probeNow();
+    res.json({ code: 0, msg: 'ok', data: { ...status, probe } });
+  } catch (e) {
+    logger.error('[keepalive] set failed', e);
+    res.json({ code: 1, msg: '设置失败：' + (e.message || '未知错误') });
+  }
+});
+
+router.post('/keepalive/probe', async (req, res) => {
+  try {
+    const result = await keepalive.probeNow(true);
+    logger.info(`[keepalive] manual probe -> ${JSON.stringify(result)}`);
+    res.json({ code: 0, msg: 'ok', data: result });
+  } catch (e) {
+    logger.error('[keepalive] manual probe failed', e);
+    res.json({ code: 1, msg: '探测失败：' + (e.message || '未知错误') });
+  }
 });
 
 /* ---------- 1.1 触发 Wise 登录，自动获取凭据 ---------- */
