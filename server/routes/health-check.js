@@ -33,6 +33,7 @@ const failureLibrary = require('../lib/failure-library-store');
 const inspectionHistory = require('../lib/inspection-history');
 const keepalive = require('../lib/keepalive');
 const keepaliveConfig = require('../lib/keepalive-config-store');
+const briefReport = require('../lib/brief-report');
 
 const router = express.Router();
 
@@ -356,6 +357,15 @@ router.post('/export-json', async (req, res) => {
       const combos = failureLibrary.countCombos(scene, records, fw);
       if (combos.length) combosByScene[scene.title] = combos;
     }
+
+    // 生成巡检简要报告（新增错误码 Top5 / 用户数增加 Top10 / issuer_id 分布），对比基准为最近一次历史快照
+    const trend = inspectionHistory.loadTrend(1, fw);
+    const prevSnapshot = trend.length ? trend[trend.length - 1] : null;
+    const report = briefReport.buildReport(excelScenarios, fw, prevSnapshot);
+    if (report.some((r) => r.newTop5.length || r.userGainTop10.length || r.issuerByError.length)) {
+      logger.info(`[export] brief report generated scenes=${report.length} (对比上次巡检日期=${prevSnapshot ? prevSnapshot.date : '无'})`);
+    }
+
     const analysisFile = path.join(analysisDir, `cluster-${Date.now()}.json`);
     const analysisData = {
       createdAt: new Date().toISOString(),
@@ -367,23 +377,16 @@ router.post('/export-json', async (req, res) => {
       summaries,
       markdownTexts,
       combosByScene,
-      sceneResults
+      sceneResults,
+      report
     };
     fs.writeFileSync(analysisFile, JSON.stringify(analysisData, null, 2), 'utf-8');
     // 固定名 latest.json，供页面展示读取
     fs.writeFileSync(path.join(analysisDir, 'latest.json'), JSON.stringify(analysisData, null, 2), 'utf-8');
     logger.info(`[export] cluster summary saved -> ${analysisFile} scenes=${summaries.length}`);
 
-    // 写入历史快照（按天聚合，供日报近 N 天趋势）
-    const snapshots = excelScenarios.map(({ scene, records }) => {
-      const sum = summaries.find((s) => s.scenarioTitle === scene.title);
-      return {
-        sceneId: scene.id,
-        sceneTitle: scene.title,
-        total: sum ? sum.total : records.length,
-        combos: combosByScene[scene.title] || []
-      };
-    });
+    // 写入历史快照（按天聚合，供日报近 N 天趋势 + 简要报告对比基准；含去重用户数）
+    const snapshots = briefReport.buildSnapshotScenes(excelScenarios, fw);
     inspectionHistory.saveSnapshot(snapshots, fw);
 
     const buffer = await excelExport.buildExcelBuffer(excelScenarios);

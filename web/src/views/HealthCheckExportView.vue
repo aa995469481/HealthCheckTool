@@ -224,6 +224,66 @@
       </el-collapse>
     </el-card>
 
+    <!-- 巡检简要报告卡片 -->
+    <el-card v-if="analysis && analysis.report && analysis.report.length" shadow="never" class="card">
+      <template #header>
+        <div class="card-header">
+          <span>巡检简要报告</span>
+          <div class="card-actions">
+            <el-button size="small" :icon="CopyDocument" @click="copyReport">复制报告</el-button>
+          </div>
+        </div>
+      </template>
+
+      <div v-for="r in analysis.report" :key="r.sceneTitle" class="report-scene">
+        <div class="report-scene-title">
+          <span>{{ r.sceneTitle }}</span>
+          <el-tag size="small" type="info">本次 {{ r.total }} 条</el-tag>
+          <el-tag v-if="r.prevTotal" size="small" type="warning">上次 {{ r.prevTotal }} 条</el-tag>
+        </div>
+
+        <div v-if="r.newTop5.length" class="report-block">
+          <div class="report-block-title">新增错误码 Top5</div>
+          <el-table :data="r.newTop5" border size="small">
+            <el-table-column label="错误码" min-width="180">
+              <template #default="{ row }">{{ row.inCode }} / {{ row.extCode }}</template>
+            </el-table-column>
+            <el-table-column prop="count" label="命中条数" width="90" />
+            <el-table-column prop="users" label="用户数" width="80" />
+          </el-table>
+        </div>
+
+        <div v-if="r.userGainTop10.length" class="report-block">
+          <div class="report-block-title">用户数增加 Top10</div>
+          <el-table :data="r.userGainTop10" border size="small">
+            <el-table-column label="错误码" min-width="180">
+              <template #default="{ row }">{{ row.inCode }} / {{ row.extCode }}</template>
+            </el-table-column>
+            <el-table-column prop="usersPrev" label="上次用户" width="90" />
+            <el-table-column prop="users" label="本次用户" width="90" />
+            <el-table-column prop="delta" label="增加" width="80" />
+          </el-table>
+        </div>
+
+        <div v-if="r.issuerByError.length" class="report-block">
+          <div class="report-block-title">错误对应 issuer_id 分布</div>
+          <el-table :data="flatIssuers(r.issuerByError)" border size="small">
+            <el-table-column label="错误码" min-width="180">
+              <template #default="{ row }">{{ row.inCode }} / {{ row.extCode }}</template>
+            </el-table-column>
+            <el-table-column prop="issuer_id" label="issuer_id" min-width="140" />
+            <el-table-column prop="count" label="条数" width="90" />
+          </el-table>
+        </div>
+
+        <el-empty
+          v-if="!r.newTop5.length && !r.userGainTop10.length && !r.issuerByError.length"
+          description="与上次巡检对比：无新增错误码、无用户数增加、无 issuer_id 数据"
+          :image-size="60"
+        />
+      </div>
+    </el-card>
+
     <!-- AI 巡检日报卡片 -->
     <el-card shadow="never" class="card">
       <template #header>
@@ -820,6 +880,48 @@ async function retryScene(s) {
   }
 }
 
+/** 打平错误→issuer_id 分布为表格行 */
+function flatIssuers(byError) {
+  const out = [];
+  for (const e of byError || []) {
+    for (const i of e.issuers || []) {
+      out.push({ inCode: e.inCode, extCode: e.extCode, issuer_id: i.issuer_id, count: i.count });
+    }
+  }
+  return out;
+}
+
+/** 复制巡检简要报告（Markdown 文本） */
+async function copyReport() {
+  const r = analysis.value && analysis.value.report;
+  if (!r || !r.length) return;
+  const lines = ['# 巡检简要报告'];
+  for (const s of r) {
+    lines.push(`## ${s.sceneTitle}（本次 ${s.total} 条${s.prevTotal ? `，上次 ${s.prevTotal} 条` : ''}）`);
+    if (s.newTop5.length) {
+      lines.push('### 新增错误码 Top5', '| 错误码 | 命中条数 | 用户数 |', '| --- | --- | --- |');
+      for (const c of s.newTop5) lines.push(`| ${c.inCode} / ${c.extCode} | ${c.count} | ${c.users} |`);
+    }
+    if (s.userGainTop10.length) {
+      lines.push('### 用户数增加 Top10', '| 错误码 | 上次用户 | 本次用户 | 增加 |', '| --- | --- | --- | --- |');
+      for (const c of s.userGainTop10) lines.push(`| ${c.inCode} / ${c.extCode} | ${c.usersPrev} | ${c.users} | ${c.delta} |`);
+    }
+    if (s.issuerByError.length) {
+      lines.push('### 错误对应 issuer_id 分布', '| 错误码 | issuer_id | 条数 |', '| --- | --- | --- |');
+      for (const e of s.issuerByError) {
+        for (const i of e.issuers) lines.push(`| ${e.inCode} / ${e.extCode} | ${i.issuer_id} | ${i.count} |`);
+      }
+    }
+    if (!s.newTop5.length && !s.userGainTop10.length && !s.issuerByError.length) lines.push('（无变化）');
+  }
+  try {
+    await navigator.clipboard.writeText(lines.join('\n'));
+    ElMessage.success('报告已复制到剪贴板');
+  } catch (e) {
+    ElMessage.error('复制失败：' + (e.message || '未知错误'));
+  }
+}
+
 /** 从分组统计中取指定统计字段的取值分布（statistics 为 [{field, dist}]） */
 function statDist(row, sf) {
   const s = (row.statistics || []).find((x) => x.field === sf);
@@ -1237,6 +1339,28 @@ onMounted(() => {
   width: 100%;
   font-size: 12px;
   color: #909399;
+}
+.report-scene {
+  margin-bottom: 20px;
+}
+.report-scene + .report-scene {
+  border-top: 1px dashed #e4e7ed;
+  padding-top: 16px;
+}
+.report-scene-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.report-block {
+  margin-bottom: 14px;
+}
+.report-block-title {
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 6px;
 }
 .debug-hint {
   font-size: 12px;
